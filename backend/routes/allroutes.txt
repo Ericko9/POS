@@ -1,0 +1,2943 @@
+// routes/analisis.js
+const express = require('express');
+const mongoose = require('mongoose');
+const Nota = require('../models/Nota');
+const Kategori = require('../models/Kategori');
+const Barang = require('../models/Barang');
+const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
+
+const router = express.Router();
+
+// Fungsi helper untuk menghitung persentase perubahan
+function calculatePercentageChange(current, previous) {
+  if (previous === 0) {
+    return current > 0 ? 100 : 0; // Atau bisa null/Infinity sesuai kebutuhan
+  }
+  return ((current - previous) / previous) * 100;
+}
+
+// Pendapatan routes
+router.get('/pendapatan', auth, adminOnly, async (req, res) => {
+  try {
+    const { periodType, startDate, endDate } = req.query;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Build date filter
+    const dateFilter = {
+      tanggal: { $gte: start, $lte: end }
+    };
+
+    // Hitung durasi periode saat ini (dalam milidetik)
+    const duration = end.getTime() - start.getTime();
+
+    // Hitung tanggal akhir periode sebelumnya (satu milidetik sebelum periode saat ini dimulai)
+    const prevEnd = new Date(start.getTime() - 1);
+    // Hitung tanggal mulai periode sebelumnya berdasarkan durasi
+    const prevStart = new Date(prevEnd.getTime() - duration);
+    prevStart.setHours(0, 0, 0, 0); // Pastikan mulai dari awal hari
+
+    // Buat filter tanggal untuk periode sebelumnya
+    const prevDateFilter = {
+      tanggal: { $gte: prevStart, $lte: prevEnd }
+    };
+
+    // Get revenue data based on period type
+    let revenueData = [];
+    
+    if (periodType === 'harian') {
+      revenueData = await Nota.aggregate([
+        { $match: dateFilter },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$tanggal' } },
+            count: { $sum: 1 },
+            total: { $sum: '$totalHarga' }}
+        },
+        {
+          $project: {
+            _id: 0,
+            period: '$_id',
+            count: 1,
+            total: 1,
+            average: { $divide: ['$total', '$count'] }
+          }
+        },
+        { $sort: { period: 1 } }
+      ]);
+    } else if (periodType === 'bulanan') {
+      revenueData = await Nota.aggregate([
+        { $match: dateFilter },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m', date: '$tanggal' } },
+            count: { $sum: 1 },
+            total: { $sum: '$totalHarga' }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            period: '$_id',
+            count: 1,
+            total: 1,
+            average: { $divide: ['$total', '$count'] }
+          }
+        },
+        { $sort: { period: 1 } }
+      ]);
+    } else if (periodType === 'tahunan') {
+      revenueData = await Nota.aggregate([
+        { $match: dateFilter },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y', date: '$tanggal' } },
+            count: { $sum: 1 },
+            total: { $sum: '$totalHarga' }
+          }
+        },
+        {
+          $project: {
+            _id: 0,
+            period: '$_id',
+            count: 1,
+            total: 1,
+            average: { $divide: ['$total', '$count'] }
+          }
+        },
+        { $sort: { period: 1 } }
+      ]);
+    }
+    
+    // Get summary for the current period
+    const summary = await Nota.aggregate([
+      { $match: dateFilter },
+      {
+        $group: {
+          _id: null,
+          totalTransaksi: { $sum: 1 },
+          totalPendapatan: { $sum: '$totalHarga' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalTransaksi: 1,
+          totalPendapatan: 1,
+          rataRata: {
+            $cond: {
+              if: { $eq: ['$totalTransaksi', 0] },
+              then: 0,
+              else: { $divide: ['$totalPendapatan', '$totalTransaksi'] }
+            }
+          }
+        }
+      }
+    ]);
+
+    // Get summary for the PREVIOUS period
+    const prevSummaryResult = await Nota.aggregate([
+      { $match: prevDateFilter }, // Gunakan filter periode sebelumnya
+      {
+        $group: {
+          _id: null,
+          totalTransaksi: { $sum: 1 },
+          totalPendapatan: { $sum: '$totalHarga' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalTransaksi: 1,
+          totalPendapatan: 1,
+          rataRata: {
+            $cond: {
+              if: { $eq: ['$totalTransaksi', 0] },
+              then: 0,
+              else: { $divide: ['$totalPendapatan', '$totalTransaksi'] }
+            }
+          }
+        }
+      }
+    ]);
+
+    const prevSummary = prevSummaryResult.length > 0 ? prevSummaryResult[0] : { totalTransaksi: 0, totalPendapatan: 0, rataRata: 0 };
+    const currentSummary = summary.length > 0 ? summary[0] : { totalTransaksi: 0, totalPendapatan: 0, rataRata: 0 }; // Ambil dari hasil summary yg sudah ada
+
+    // Calculate percentage changes
+    const pendapatanPercentage = calculatePercentageChange(currentSummary.totalPendapatan, prevSummary.totalPendapatan);
+    const transaksiPercentage = calculatePercentageChange(currentSummary.totalTransaksi, prevSummary.totalTransaksi);
+    const rataRataPercentage = calculatePercentageChange(currentSummary.rataRata, prevSummary.rataRata);
+
+    // Format comparison data
+    const comparisonData = {
+      pendapatan: { value: prevSummary.totalPendapatan, percentage: parseFloat(pendapatanPercentage.toFixed(1)) },
+      transaksi: { value: prevSummary.totalTransaksi, percentage: parseFloat(transaksiPercentage.toFixed(1)) },
+      rataRata: { value: prevSummary.rataRata, percentage: parseFloat(rataRataPercentage.toFixed(1)) }
+    };
+
+    res.json({
+      data: revenueData,
+      summary: currentSummary, // Gunakan currentSummary yang sudah diolah
+      comparisonData // Tambahkan data perbandingan
+    });
+  } catch (error) {
+    console.error('Analisis pendapatan error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+ // Kategori routes
+ router.get('/kategori', auth, adminOnly, async (req, res) => {
+  try {
+    const { startDate, endDate, kategoriId } = req.query;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Build pipeline
+    const pipeline = [
+      // Stage 1: Match nota by date
+      {
+        $match: {
+          tanggal: { $gte: start, $lte: end }
+        }
+      },
+      // Stage 2: Unwind items
+      { $unwind: '$items' },
+      // Stage 3: Lookup barang
+      {
+        $lookup: {
+          from: 'barangs',
+          localField: 'items.barangId',
+          foreignField: '_id',
+          as: 'barang'
+        }
+      },
+      // Stage 4: Unwind barang
+      { $unwind: '$barang' },
+      // Stage 5: Filter by kategori if specified
+      ...(kategoriId ? [
+        { $match: { 'barang.kategoriId': mongoose.Types.ObjectId(kategoriId) } }
+      ] : []),
+      // Stage 6: Lookup kategori
+      {
+        $lookup: {
+          from: 'kategoris',
+          localField: 'barang.kategoriId',
+          foreignField: '_id',
+          as: 'kategori'
+        }
+      },
+      // Stage 7: Unwind kategori
+      { $unwind: '$kategori' },
+      // Stage 8: Group by kategori
+      {
+        $group: {
+          _id: '$kategori._id',
+          nama: { $first: '$kategori.nama' },
+          jumlahTerjual: { $sum: '$items.jumlah' },
+          totalPendapatan: { $sum: '$items.subtotal' }
+        }
+      },
+      // Stage 9: Sort by total pendapatan descending
+      { $sort: { totalPendapatan: -1 } }
+    ];
+    
+    // Execute pipeline
+    const kategoriStats = await Nota.aggregate(pipeline);
+    
+    // Calculate total pendapatan
+    const totalPendapatan = kategoriStats.reduce((acc, item) => acc + item.totalPendapatan, 0);
+    
+    // Calculate persentase for each category
+    const result = kategoriStats.map(item => ({
+      ...item,
+      persentase: totalPendapatan > 0 ? (item.totalPendapatan / totalPendapatan) * 100 : 0
+    }));
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Analisis kategori error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+ // Kategori detail routes
+ router.get('/kategori/:id/products', auth, adminOnly, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const kategoriId = req.params.id;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Build pipeline
+    const pipeline = [
+      // Stage 1: Match nota by date
+      {
+        $match: {
+          tanggal: { $gte: start, $lte: end }
+        }
+      },
+      // Stage 2: Unwind items
+      { $unwind: '$items' },
+      // Stage 3: Lookup barang
+      {
+        $lookup: {
+          from: 'barangs',
+          localField: 'items.barangId',
+          foreignField: '_id',
+          as: 'barang'
+        }
+      },
+      // Stage 4: Unwind barang
+      { $unwind: '$barang' },
+      // Stage 5: Filter by kategori
+      { $match: { 'barang.kategoriId': mongoose.Types.ObjectId(kategoriId) } },
+      // Stage 6: Group by barang
+      {
+        $group: {
+          _id: '$barang._id',
+          nama: { $first: '$barang.nama' },
+          grade: { $first: '$barang.grade' },
+          jumlahTerjual: { $sum: '$items.jumlah' },
+          totalPendapatan: { $sum: '$items.subtotal' }
+        }
+      },
+      // Stage 7: Sort by jumlah terjual descending
+      { $sort: { jumlahTerjual: -1 } }
+    ];
+    
+    // Execute pipeline
+    const products = await Nota.aggregate(pipeline);
+    
+    res.json(products);
+  } catch (error) {
+    console.error('Analisis kategori products error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+ // Kategori trend routes
+ router.get('/kategori/:id/trend', auth, adminOnly, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const kategoriId = req.params.id;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Build pipeline
+    const pipeline = [
+      // Stage 1: Match nota by date
+      {
+        $match: {
+          tanggal: { $gte: start, $lte: end }
+        }
+      },
+      // Stage 2: Unwind items
+      { $unwind: '$items' },
+      // Stage 3: Lookup barang
+      {
+        $lookup: {
+          from: 'barangs',
+          localField: 'items.barangId',
+          foreignField: '_id',
+          as: 'barang'
+        }
+      },
+      // Stage 4: Unwind barang
+      { $unwind: '$barang' },
+      // Stage 5: Filter by kategori
+      { $match: { 'barang.kategoriId': mongoose.Types.ObjectId(kategoriId) } },
+      // Stage 6: Group by month
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m', date: '$tanggal' } },
+          jumlahTerjual: { $sum: '$items.jumlah' },
+          totalPendapatan: { $sum: '$items.subtotal' }
+        }
+      },
+      // Stage 7: Project to format
+      {
+        $project: {
+          _id: 0,
+          bulan: '$_id',
+          jumlahTerjual: 1,
+          totalPendapatan: 1
+        }
+      },
+      // Stage 8: Sort by month
+      { $sort: { bulan: 1 } }
+    ];
+    
+    // Execute pipeline
+    const trend = await Nota.aggregate(pipeline);
+    
+    res.json(trend);
+  } catch (error) {
+    console.error('Analisis kategori trend error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+// Modifikasi pada route pelanggan di routes/analisis.js
+// Tambahkan fungsi perhitungan untuk periode sebelumnya
+
+// Pelanggan routes
+router.get('/pelanggan', auth, adminOnly, async (req, res) => {
+  try {
+    const { search, startDate, endDate, page = 1, limit = 10 } = req.query;
+    const skip = (page - 1) * limit;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Hitung durasi periode saat ini (dalam milidetik)
+    const duration = end.getTime() - start.getTime();
+
+    // Hitung tanggal periode sebelumnya
+    const prevEnd = new Date(start.getTime() - 1);
+    const prevStart = new Date(prevEnd.getTime() - duration);
+    prevStart.setHours(0, 0, 0, 0); // Pastikan mulai dari awal hari
+    
+    // Build match stage for current period
+    const matchStage = {
+      tanggal: { $gte: start, $lte: end }
+    };
+    
+    // Build match stage for previous period
+    const prevMatchStage = {
+      tanggal: { $gte: prevStart, $lte: prevEnd }
+    };
+    
+    if (search) {
+      matchStage.$or = [
+        { namaPelanggan: { $regex: search, $options: 'i' } },
+        { noHpPelanggan: { $regex: search, $options: 'i' } }
+      ];
+      prevMatchStage.$or = [
+        { namaPelanggan: { $regex: search, $options: 'i' } },
+        { noHpPelanggan: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Count total customers matching the criteria for current period
+    const countPipeline = [
+      { $match: matchStage },
+      {
+        $group: {
+          _id: '$noHpPelanggan',
+          nama: { $first: '$namaPelanggan' }
+        }
+      },
+      { $count: 'total' }
+    ];
+    
+    const countResult = await Nota.aggregate(countPipeline);
+    const total = countResult.length > 0 ? countResult[0].total : 0;
+    
+    // Get customer stats for current period
+    const pipeline = [
+      // Stage 1: Match nota by date and search
+      { $match: matchStage },
+      // Stage 2: Group by customer phone
+      {
+        $group: {
+          _id: '$noHpPelanggan',
+          namaPelanggan: { $first: '$namaPelanggan' },
+          alamatPelanggan: { $first: '$alamatPelanggan' },
+          jumlahTransaksi: { $sum: 1 },
+          totalBelanja: { $sum: '$totalHarga' },
+          lastTransaction: { $max: '$tanggal' }
+        }
+      },
+      // Stage 3: Calculate average
+      {
+        $project: {
+          _id: 0,
+          noHpPelanggan: '$_id',
+          namaPelanggan: 1,
+          alamatPelanggan: 1,
+          jumlahTransaksi: 1,
+          totalBelanja: 1,
+          rataRata: { $divide: ['$totalBelanja', '$jumlahTransaksi'] },
+          lastTransaction: 1
+        }
+      },
+      // Stage 4: Sort by total belanja descending
+      { $sort: { totalBelanja: -1 } },
+      // Stage 5: Pagination
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    ];
+    
+    // Execute pipeline for current period
+    const customers = await Nota.aggregate(pipeline);
+    
+    // Get summary for current period
+    const summaryPipeline = [
+      { $match: matchStage },
+      {
+        $group: {
+          _id: '$noHpPelanggan',
+          totalBelanja: { $sum: '$totalHarga' },
+          jumlahTransaksi: { $sum: 1 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPelanggan: { $sum: 1 },
+          totalTransaksi: { $sum: '$jumlahTransaksi' },
+          totalPendapatan: { $sum: '$totalBelanja' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalPelanggan: 1,
+          totalTransaksi: 1,
+          totalPendapatan: 1,
+          rataRata: { $divide: ['$totalPendapatan', '$totalTransaksi'] }
+        }
+      }
+    ];
+    
+    const summaryResult = await Nota.aggregate(summaryPipeline);
+    const summary = summaryResult.length > 0 ? summaryResult[0] : {
+      totalPelanggan: 0,
+      totalTransaksi: 0,
+      totalPendapatan: 0,
+      rataRata: 0
+    };
+    
+    // Get summary for PREVIOUS period
+    const prevSummaryPipeline = [
+      { $match: prevMatchStage },
+      {
+        $group: {
+          _id: '$noHpPelanggan',
+          totalBelanja: { $sum: '$totalHarga' },
+          jumlahTransaksi: { $sum: 1 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPelanggan: { $sum: 1 },
+          totalTransaksi: { $sum: '$jumlahTransaksi' },
+          totalPendapatan: { $sum: '$totalBelanja' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalPelanggan: 1,
+          totalTransaksi: 1,
+          totalPendapatan: 1,
+          rataRata: { $divide: ['$totalPendapatan', '$totalTransaksi'] }
+        }
+      }
+    ];
+    
+    const prevSummaryResult = await Nota.aggregate(prevSummaryPipeline);
+    const prevSummary = prevSummaryResult.length > 0 ? prevSummaryResult[0] : {
+      totalPelanggan: 0,
+      totalTransaksi: 0,
+      totalPendapatan: 0,
+      rataRata: 0
+    };
+    
+    // Calculate percentage changes
+    const calculatePercentageChange = (current, previous) => {
+      if (previous === 0) {
+        return current > 0 ? 100 : 0;
+      }
+      return ((current - previous) / previous) * 100;
+    };
+    
+    const pelangganPercentage = calculatePercentageChange(summary.totalPelanggan, prevSummary.totalPelanggan);
+    const transaksiPercentage = calculatePercentageChange(summary.totalTransaksi, prevSummary.totalTransaksi);
+    const rataRataPercentage = calculatePercentageChange(summary.rataRata, prevSummary.rataRata);
+    
+    // Format comparison data
+    const comparisonData = {
+      pelanggan: { value: prevSummary.totalPelanggan, percentage: parseFloat(pelangganPercentage.toFixed(1)) },
+      transaksi: { value: prevSummary.totalTransaksi, percentage: parseFloat(transaksiPercentage.toFixed(1)) },
+      rataRata: { value: prevSummary.rataRata, percentage: parseFloat(rataRataPercentage.toFixed(1)) }
+    };
+
+    res.json({
+      customers,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / limit),
+      summary,
+      comparisonData
+    });
+  } catch (error) {
+    console.error('Analisis pelanggan error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+ 
+ // Get customer transactions
+ router.get('/pelanggan/:noHp/transactions', auth, adminOnly, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const noHp = req.params.noHp;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Get transactions
+    const transactions = await Nota.find({
+      noHpPelanggan: noHp,
+      tanggal: { $gte: start, $lte: end }
+    })
+      .sort({ tanggal: -1 });
+    
+    res.json(transactions);
+  } catch (error) {
+    console.error('Get customer transactions error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+ // Get customer products
+ router.get('/pelanggan/:noHp/products', auth, adminOnly, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    const noHp = req.params.noHp;
+    
+    // Validate dates
+    if (!startDate || !endDate) {
+      return res.status(400).json({ message: 'Tanggal awal dan akhir harus diisi' });
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    
+    // Build pipeline
+    const pipeline = [
+      // Stage 1: Match nota by date and customer
+      {
+        $match: {
+          noHpPelanggan: noHp,
+          tanggal: { $gte: start, $lte: end }
+        }
+      },
+      // Stage 2: Unwind items
+      { $unwind: '$items' },
+      // Stage 3: Lookup barang
+      {
+        $lookup: {
+          from: 'barangs',
+          localField: 'items.barangId',
+          foreignField: '_id',
+          as: 'barang'
+        }
+      },
+      // Stage 4: Unwind barang
+      { $unwind: '$barang' },
+      // Stage 5: Lookup kategori
+      {
+        $lookup: {
+          from: 'kategoris',
+          localField: 'barang.kategoriId',
+          foreignField: '_id',
+          as: 'kategori'
+        }
+      },
+      // Stage 6: Unwind kategori
+      { $unwind: '$kategori' },
+      // Stage 7: Group by barang
+      {
+        $group: {
+          _id: '$barang._id',
+          namaBarang: { $first: '$barang.nama' },
+          kategori: { $first: '$kategori.nama' },
+          jumlahBeli: { $sum: '$items.jumlah' },
+          totalHarga: { $sum: '$items.subtotal' }
+        }
+      },
+      // Stage 8: Sort by jumlah beli descending
+      { $sort: { jumlahBeli: -1 } }
+    ];
+    
+    // Execute pipeline
+    const products = await Nota.aggregate(pipeline);
+    
+    res.json(products);
+  } catch (error) {
+    console.error('Get customer products error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+ });
+ 
+ module.exports = router;// routes/auth.js
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+
+const router = express.Router();
+
+// Login
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // Check if user exists
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(401).json({ message: 'Username atau password salah' });
+    }
+    
+    // Check password
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Username atau password salah' });
+    }
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    // Return user info
+    res.json({
+      token,
+      user: {
+        _id: user._id,
+        username: user.username,
+        nama: user.nama,
+        role: user.role,
+        email: user.email,
+        noHp: user.noHp
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get current user info
+router.get('/me', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ message: 'User tidak ditemukan' });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/barang.js
+const express = require('express');
+const mongoose = require('mongoose');
+const Barang = require('../models/Barang');
+const Kategori = require('../models/Kategori');
+const Nota = require('../models/Nota');
+const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
+
+const router = express.Router();
+
+// Helper function to process promo data consistently
+const processPromo = (barang) => {
+  const b = barang.toObject();
+  
+  // Check if promo is active
+  if (b.promo && new Date(b.promo.tanggalBerakhir) < new Date()) {
+    b.promo.isActive = false;
+  } else if (b.promo) {
+    b.promo.isActive = true;
+    
+    // Calculate discounted price based on available fields
+    if (b.promo.potonganHarga !== undefined) {
+      b.hargaSetelahDiskon = b.harga - b.promo.potonganHarga;
+    } else if (b.promo.persentaseDiskon !== undefined) {
+      b.hargaSetelahDiskon = b.harga * (1 - (b.promo.persentaseDiskon / 100));
+    }
+    
+    if (b.hargaSetelahDiskon < 0) b.hargaSetelahDiskon = 0;
+  }
+  
+  return b;
+};
+
+// Get all barangs with pagination and filters
+router.get('/', auth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    const { search, kategoriId, sort } = req.query;
+    
+    // Build filter
+    const filter = {};
+    
+    if (search) {
+      filter.nama = { $regex: search, $options: 'i' };
+    }
+    
+    if (kategoriId) {
+      filter.kategoriId = kategoriId;
+    }
+    
+    // Build sort
+    let sortOption = { nama: 1 }; // Default sort by name ascending
+    
+    if (sort) {
+      const [field, order] = sort.split('_');
+      
+      if (field === 'nama') {
+        sortOption = { nama: order === 'asc' ? 1 : -1 };
+      } else if (field === 'harga') {
+        sortOption = { harga: order === 'asc' ? 1 : -1 };
+      } else if (field === 'stok') {
+        sortOption = { stokBagus: order === 'asc' ? 1 : -1 };
+      }
+    }
+    
+    // Get total count
+    const total = await Barang.countDocuments(filter);
+    
+    // Get barangs
+    const barangs = await Barang.find(filter)
+      .populate('kategoriId', 'nama')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit);
+    
+    // Prepare response
+    const processedBarangs = barangs.map(barang => {
+      const b = processPromo(barang);
+      
+      // Rename kategoriId to kategori for frontend
+      b.kategori = b.kategoriId;
+      delete b.kategoriId;
+      
+      return b;
+    });
+    
+    res.json({
+      barangs: processedBarangs,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('Get barangs error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// PENTING: Rute spesifik harus ditempatkan SEBELUM rute parameter
+// Search barangs
+router.get('/search', auth, async (req, res) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query) {
+      return res.json([]);
+    }
+    
+    const barangs = await Barang.find({
+      nama: { $regex: query, $options: 'i' },
+      stokBagus: { $gt: 0 }
+    })
+      .populate('kategoriId', 'nama')
+      .select('nama grade harga stokBagus promo kategoriId')
+      .limit(10)
+      .sort({ nama: 1 });
+    
+    // Process barangs
+    const processedBarangs = barangs.map(barang => {
+      const b = processPromo(barang);
+      
+      // Rename kategoriId to kategori for frontend
+      b.kategori = b.kategoriId;
+      delete b.kategoriId;
+      
+      return b;
+    });
+    
+    res.json(processedBarangs);
+  } catch (error) {
+    console.error('Search barangs error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get all barangs (no pagination) for dropdown
+router.get('/list', auth, async (req, res) => {
+  try {
+    const barangs = await Barang.find() // Allow all items to be in the list
+      .select('nama grade harga stokBagus minStok promo')
+      .sort({ nama: 1 });
+    
+    // Process barangs
+    const processedBarangs = barangs.map(barang => processPromo(barang));
+    
+    res.json(processedBarangs);
+  } catch (error) {
+    console.error('Get barang list error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get barang by ID (Harus ditempatkan SETELAH rute spesifik lainnya)
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const barang = await Barang.findById(req.params.id)
+      .populate('kategoriId', 'nama');
+    
+    if (!barang) {
+      return res.status(404).json({ message: 'Barang tidak ditemukan' });
+    }
+    
+    // Process barang
+    const result = processPromo(barang);
+    
+    // Rename kategoriId to kategori for frontend
+    result.kategori = result.kategoriId;
+    delete result.kategoriId;
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Get barang error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get barang sales history
+router.get('/:id/sales', auth, async (req, res) => {
+  try {
+    const barangId = req.params.id;
+    
+    // Get sales history
+    const salesHistory = await Nota.aggregate([
+      // Match notas that contain the barang
+      { $match: { 'items.barangId': mongoose.Types.ObjectId(barangId) } },
+      // Unwind items array
+      { $unwind: '$items' },
+      // Match only the specific barang
+      { $match: { 'items.barangId': mongoose.Types.ObjectId(barangId) } },
+      // Lookup kasir info
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'kasirId',
+          foreignField: '_id',
+          as: 'kasir'
+        }
+      },
+      // Unwind kasir array
+      { $unwind: '$kasir' },
+      // Project needed fields
+      {
+        $project: {
+          _id: 1,
+          notaId: '$_id',
+          nomorNota: 1,
+          tanggal: 1,
+          namaPelanggan: 1,
+          namaKasir: '$kasir.nama',
+          namaBarang: '$items.namaBarang',
+          jumlah: '$items.jumlah',
+          hargaSatuan: '$items.hargaSatuan',
+          diskon: '$items.diskon',
+          totalHarga: '$items.subtotal'
+        }
+      },
+      // Sort by date descending
+      { $sort: { tanggal: -1 } },
+      // Limit to 20 records
+      { $limit: 20 }
+    ]);
+    
+    // Get monthly stats
+    const salesStats = await Nota.aggregate([
+      // Match notas that contain the barang
+      { $match: { 'items.barangId': mongoose.Types.ObjectId(barangId) } },
+      // Unwind items array
+      { $unwind: '$items' },
+      // Match only the specific barang
+      { $match: { 'items.barangId': mongoose.Types.ObjectId(barangId) } },
+      // Group by month
+      {
+        $group: {
+          _id: {
+            year: { $year: '$tanggal' },
+            month: { $month: '$tanggal' }
+          },
+          jumlah: { $sum: '$items.jumlah' },
+          totalPendapatan: { $sum: '$items.subtotal' }
+        }
+      },
+      // Project in readable format
+      {
+        $project: {
+          _id: 0,
+          bulan: {
+            $concat: [
+              { $toString: '$_id.year' },
+              '-',
+              {
+                $cond: {
+                  if: { $lt: ['$_id.month', 10] },
+                  then: { $concat: ['0', { $toString: '$_id.month' }] },
+                  else: { $toString: '$_id.month' }
+                }
+              }
+            ]
+          },
+          jumlah: 1,
+          totalPendapatan: 1
+        }
+      },
+      // Sort by year and month
+      { $sort: { bulan: 1 } },
+      // Limit to last 12 months
+      { $limit: 12 }
+    ]);
+    
+    res.json({
+      history: salesHistory,
+      stats: salesStats
+    });
+  } catch (error) {
+    console.error('Get barang sales error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Create barang
+router.post('/', auth, adminOnly, async (req, res) => {
+  try {
+    const {
+      nama,
+      kategoriId,
+      grade,
+      harga,
+      stokBagus,
+      stokRusak,
+      minStok,
+      promo
+    } = req.body;
+    
+    // Check if kategori exists
+    const kategori = await Kategori.findById(kategoriId);
+    if (!kategori) {
+      return res.status(400).json({ message: 'Kategori tidak valid' });
+    }
+    
+    // Create new barang
+    const barangData = {
+      nama,
+      kategoriId,
+      grade,
+      harga,
+      stokBagus: stokBagus || 0,
+      stokRusak: stokRusak || 0,
+      minStok: minStok || 5
+    };
+    
+    // Handle promo data - support both structures
+    if (promo) {
+      barangData.promo = {};
+      
+      // Handle potonganHarga (new structure)
+      if (promo.potonganHarga !== undefined) {
+        barangData.promo.potonganHarga = promo.potonganHarga;
+      }
+      
+      // Handle persentaseDiskon (old structure)
+      if (promo.persentaseDiskon !== undefined) {
+        barangData.promo.persentaseDiskon = promo.persentaseDiskon;
+      }
+      
+      // Common promo fields
+      barangData.promo.tanggalMulai = promo.tanggalMulai;
+      barangData.promo.tanggalBerakhir = promo.tanggalBerakhir;
+      barangData.promo.keterangan = promo.keterangan;
+    }
+    
+    const barang = new Barang(barangData);
+    
+    await barang.save();
+    
+    // Process saved barang for response
+    const result = processPromo(barang);
+    
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Create barang error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Update barang
+router.put('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const {
+      nama,
+      kategoriId,
+      grade,
+      harga,
+      stokBagus,
+      stokRusak,
+      minStok,
+      promo
+    } = req.body;
+    
+    // Check if barang exists
+    const barang = await Barang.findById(req.params.id);
+    if (!barang) {
+      return res.status(404).json({ message: 'Barang tidak ditemukan' });
+    }
+    
+    // Check if kategori exists
+    if (kategoriId !== barang.kategoriId.toString()) {
+      const kategori = await Kategori.findById(kategoriId);
+      if (!kategori) {
+        return res.status(400).json({ message: 'Kategori tidak valid' });
+      }
+    }
+    
+    // Update barang
+    barang.nama = nama;
+    barang.kategoriId = kategoriId;
+    barang.grade = grade;
+    barang.harga = harga;
+    barang.stokBagus = stokBagus;
+    barang.stokRusak = stokRusak;
+    barang.minStok = minStok;
+    
+    // Update promo - support both structures
+    if (promo) {
+      barang.promo = {};
+      
+      // Handle potonganHarga (new structure)
+      if (promo.potonganHarga !== undefined) {
+        barang.promo.potonganHarga = promo.potonganHarga;
+      }
+      
+      // Handle persentaseDiskon (old structure)
+      if (promo.persentaseDiskon !== undefined) {
+        barang.promo.persentaseDiskon = promo.persentaseDiskon;
+      }
+      
+      // Common promo fields
+      barang.promo.tanggalMulai = promo.tanggalMulai;
+      barang.promo.tanggalBerakhir = promo.tanggalBerakhir;
+      barang.promo.keterangan = promo.keterangan;
+    } else {
+      barang.promo = undefined;
+    }
+    
+    barang.updatedAt = Date.now();
+    
+    await barang.save();
+    
+    // Process updated barang for response
+    const result = processPromo(barang);
+    
+    // Ensure kategoriId is renamed to kategori for frontend
+    result.kategori = result.kategoriId;
+    delete result.kategoriId;
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Update barang error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Delete barang
+router.delete('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    console.log(`[DELETE] Menghapus barang dengan ID: ${req.params.id}`);
+    
+    // Check if barang exists
+    const barang = await Barang.findById(req.params.id);
+    if (!barang) {
+      console.log(`[DELETE] Barang dengan ID ${req.params.id} tidak ditemukan`);
+      return res.status(404).json({ message: 'Barang tidak ditemukan' });
+    }
+    
+    console.log(`[DELETE] Barang ditemukan: ${barang.nama}`);
+    
+    // Check if barang is used in any nota - Versi yang kompatibel dengan Mongoose 6+
+    let barangObjectId;
+    try {
+      // Jika menggunakan Mongoose v6+
+      if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+        barangObjectId = new mongoose.Types.ObjectId(req.params.id);
+      } else {
+        console.log(`[DELETE] Format ID tidak valid: ${req.params.id}`);
+        return res.status(400).json({ message: 'Format ID barang tidak valid' });
+      }
+    } catch (err) {
+      console.error('[DELETE] Error saat membuat ObjectId:', err);
+      // Langsung menggunakan string ID sebagai fallback
+      barangObjectId = req.params.id;
+    }
+    
+    console.log(`[DELETE] Memeriksa referensi di nota untuk barang: ${barangObjectId}`);
+    
+    // Cara aman - menggunakan aggregate pipeline
+    const notaCheck = await Nota.aggregate([
+      { $unwind: '$items' },
+      { 
+        $match: { 
+          $expr: { 
+            $eq: [
+              { $toString: '$items.barangId' }, 
+              req.params.id
+            ] 
+          } 
+        } 
+      },
+      { $limit: 1 }
+    ]);
+    
+    const notaCount = notaCheck.length;
+    console.log(`[DELETE] Jumlah nota yang mereferensikan barang: ${notaCount}`);
+    
+    if (notaCount > 0) {
+      console.log(`[DELETE] Barang tidak dapat dihapus karena digunakan dalam transaksi`);
+      return res.status(400).json({
+        message: 'Barang tidak dapat dihapus karena sudah digunakan dalam transaksi'
+      });
+    }
+    
+    // Delete barang - using modern approach
+    console.log(`[DELETE] Menghapus barang dari database...`);
+    const deleteResult = await Barang.deleteOne({ _id: req.params.id });
+    console.log(`[DELETE] Hasil penghapusan: ${JSON.stringify(deleteResult)}`);
+    
+    res.json({ message: 'Barang berhasil dihapus' });
+  } catch (error) {
+    console.error('[DELETE] Error saat menghapus barang:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/dashboard.js
+const express = require('express');
+const Nota = require('../models/Nota');
+const Barang = require('../models/Barang');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+const { ObjectId } = require('mongoose').Types;
+
+const router = express.Router();
+
+router.get('/', auth, async (req, res) => {
+  try {
+    const currentUser = req.user;
+    const isAdmin = currentUser.role === 'admin';
+    
+    // Jika kasir, hanya ambil data milik kasir tersebut
+    const kasirFilter = isAdmin ? {} : { kasirId: currentUser._id };
+    
+    // Get total pendapatan (berdasarkan role)
+    const pendapatanResult = await Nota.aggregate([
+      { $match: kasirFilter },
+      { $group: { _id: null, totalPendapatan: { $sum: '$totalHarga' } } }
+    ]);
+    
+    const totalPendapatan = pendapatanResult.length > 0 ? pendapatanResult[0].totalPendapatan : 0;
+    
+    // Get total nota (berdasarkan role)
+    const totalNota = await Nota.countDocuments(kasirFilter);
+    
+    // Kode perbaikan: Menggunakan data transaksi untuk menentukan barang terlaris
+    const periodeHari = 30; // Bisa disesuaikan: 7, 30, 90 hari, dll
+
+    // Tentukan tanggal awal periode
+    const tanggalAwal = new Date();
+    tanggalAwal.setDate(tanggalAwal.getDate() - periodeHari);
+    tanggalAwal.setHours(0, 0, 0, 0);
+
+    // Gunakan agregasi MongoDB untuk menghitung penjualan per barang dalam periode tertentu
+    const barangTerlarisData = await Nota.aggregate([
+      // Filter nota berdasarkan periode waktu
+      { 
+        $match: { 
+          tanggal: { $gte: tanggalAwal },
+          ...kasirFilter // Tetap gunakan filter kasir yang sudah ada
+        } 
+      },
+      // Pisahkan array items menjadi dokumen terpisah
+      { $unwind: '$items' },
+      // Kelompokkan berdasarkan barangId dan jumlahkan penjualan
+      { 
+        $group: { 
+          _id: '$items.barangId', 
+          namaBarang: { $first: '$items.namaBarang' },
+          jumlahTerjual: { $sum: '$items.jumlah' },
+          totalPendapatan: { $sum: '$items.subtotal' }
+        } 
+      },
+      // Urutkan berdasarkan jumlah terjual (descending)
+      { $sort: { jumlahTerjual: -1 } },
+      // Ambil hanya 1 dokumen teratas (barang terlaris)
+      { $limit: 1 }
+    ]);
+
+    // Format hasil query
+    const barangTerlaris = barangTerlarisData.length > 0 
+      ? { 
+          nama: barangTerlarisData[0].namaBarang, 
+          jumlahTerjual: barangTerlarisData[0].jumlahTerjual,
+          periode: periodeHari // Tambahkan informasi periode
+        } 
+      : { nama: 'Belum ada', jumlahTerjual: 0, periode: periodeHari };
+    
+    // Prepare user roles to include both kasir and admin
+    // Jika kasir, hanya ambil data miliknya saja
+    const userQuery = isAdmin 
+      ? { role: { $in: ['kasir', 'admin'] } }
+      : { _id: currentUser._id };
+    
+    // Get user data (kasir and admin)
+    const userData = await User.aggregate([
+      { $match: userQuery },
+      {
+        $lookup: {
+          from: 'notas',
+          localField: '_id',
+          foreignField: 'kasirId',
+          as: 'notas'
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          nama: 1,
+          role: 1,
+          jumlahNota: { $size: '$notas' },
+          totalPendapatan: { $sum: '$notas.totalHarga' },
+          rataRata: {
+            $cond: [
+              { $eq: [{ $size: '$notas' }, 0] },
+              0,
+              { $divide: [{ $sum: '$notas.totalHarga' }, { $size: '$notas' }] }
+            ]
+          }
+        }
+      },
+      { $sort: { totalPendapatan: -1 } }
+    ]);
+    
+    // Get weekly data (last 7 days)
+    const today = new Date();
+    const lastWeek = new Date();
+    lastWeek.setDate(lastWeek.getDate() - 6);
+    
+    const weeklyData = [];
+    
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(lastWeek);
+      date.setDate(lastWeek.getDate() + i);
+      
+      const dayStart = new Date(date.setHours(0, 0, 0, 0));
+      const dayEnd = new Date(date.setHours(23, 59, 59, 999));
+      
+      const dayData = {
+        tanggal: dayStart.toISOString().split('T')[0],
+        users: []
+      };
+      
+      // Tentukan user yang akan dianalisis data hariannya
+      const usersToAnalyze = isAdmin 
+        ? userData 
+        : userData.filter(user => user._id.toString() === currentUser._id.toString());
+      
+      // Get data for each user on this day
+      for (const user of usersToAnalyze) {
+        const userDailyData = await Nota.aggregate([
+          {
+            $match: {
+              kasirId: user._id,
+              tanggal: { $gte: dayStart, $lte: dayEnd }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              pendapatan: { $sum: '$totalHarga' },
+              jumlahNota: { $sum: 1 }
+            }
+          }
+        ]);
+        
+        dayData.users.push({
+          _id: user._id,
+          nama: user.nama,
+          role: user.role,
+          pendapatan: userDailyData.length > 0 ? userDailyData[0].pendapatan : 0,
+          jumlahNota: userDailyData.length > 0 ? userDailyData[0].jumlahNota : 0
+        });
+      }
+      
+      weeklyData.push(dayData);
+    }
+    
+    // Hitung tren mingguan
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999); // Akhir hari ini
+
+    const thisWeekStart = new Date(todayEnd);
+    thisWeekStart.setDate(todayEnd.getDate() - 6); // Mulai 7 hari yang lalu
+    thisWeekStart.setHours(0, 0, 0, 0);
+
+    const lastWeekStart = new Date(thisWeekStart);
+    lastWeekStart.setDate(thisWeekStart.getDate() - 7); // Mulai 14 hari yang lalu
+    lastWeekStart.setHours(0, 0, 0, 0);
+
+    const lastWeekEnd = new Date(thisWeekStart);
+    lastWeekEnd.setDate(thisWeekStart.getDate() - 1); // Akhir 8 hari yang lalu
+    lastWeekEnd.setHours(23, 59, 59, 999);
+
+    // Fungsi helper untuk get data mingguan
+    const getWeeklyStats = async (startDate, endDate) => {
+      const stats = await Nota.aggregate([
+        {
+          $match: {
+            ...kasirFilter, // Gunakan filter kasir yang sudah ada
+            tanggal: { $gte: startDate, $lte: endDate }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalPendapatan: { $sum: '$totalHarga' },
+            totalNota: { $sum: 1 } // Hitung jumlah nota
+          }
+        }
+      ]);
+      return {
+        pendapatan: stats.length > 0 ? stats[0].totalPendapatan : 0,
+        nota: stats.length > 0 ? stats[0].totalNota : 0
+      };
+    };
+
+    // Dapatkan data minggu ini dan minggu lalu
+    const thisWeekStats = await getWeeklyStats(thisWeekStart, todayEnd);
+    const lastWeekStats = await getWeeklyStats(lastWeekStart, lastWeekEnd);
+
+    // Hitung persentase perubahan
+    let pendapatanTrend = 0;
+    if (lastWeekStats.pendapatan !== 0) {
+      pendapatanTrend = ((thisWeekStats.pendapatan - lastWeekStats.pendapatan) / lastWeekStats.pendapatan) * 100;
+    } else if (thisWeekStats.pendapatan > 0) {
+      pendapatanTrend = 100; // Atau bisa dianggap tak terhingga jika minggu lalu 0
+    }
+
+    let notaTrend = 0;
+    if (lastWeekStats.nota !== 0) {
+      notaTrend = ((thisWeekStats.nota - lastWeekStats.nota) / lastWeekStats.nota) * 100;
+    } else if (thisWeekStats.nota > 0) {
+      notaTrend = 100; // Atau bisa dianggap tak terhingga jika minggu lalu 0
+    }
+
+    res.json({
+      totalPendapatan,
+      totalNota,
+      barangTerlaris,
+      userData,
+      weeklyData,
+      pendapatanTrend: parseFloat(pendapatanTrend.toFixed(1)),
+      notaTrend: parseFloat(notaTrend.toFixed(1))
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/kasir.js
+const express = require('express');
+const bcrypt = require('bcrypt');
+const User = require('../models/User');
+const Nota = require('../models/Nota');
+const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
+
+const router = express.Router();
+
+// Get all kasirs
+router.get('/', auth, adminOnly, async (req, res) => {
+  try {
+    const { search } = req.query;
+    
+    // Build filter
+    const filter = { role: 'kasir' };
+    
+    if (search) {
+      filter.$or = [
+        { nama: { $regex: search, $options: 'i' } },
+        { username: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Get kasirs
+    const kasirs = await User.find(filter)
+      .select('-password')
+      .sort({ nama: 1 });
+    
+// Get performance for each kasir
+const kasirsWithPerformance = await Promise.all(
+  kasirs.map(async (kasir) => {
+    const k = kasir.toObject();
+    
+    // Get total notas
+    const totalNota = await Nota.countDocuments({ kasirId: kasir._id });
+    
+    // Get total pendapatan
+    const notaAggregate = await Nota.aggregate([
+      { $match: { kasirId: kasir._id } },
+      { $group: { _id: null, totalPendapatan: { $sum: '$totalHarga' } } }
+    ]);
+    
+    const totalPendapatan = notaAggregate.length > 0 ? notaAggregate[0].totalPendapatan : 0;
+    
+    return {
+      ...k,
+      totalNota,
+      totalPendapatan
+    };
+  })
+);
+
+res.json(kasirsWithPerformance);
+} catch (error) {
+console.error('Get kasirs error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Get kasir by ID
+router.get('/:id', auth, async (req, res) => {
+try {
+const kasir = await User.findById(req.params.id).select('-password');
+
+if (!kasir) {
+  return res.status(404).json({ message: 'Kasir tidak ditemukan' });
+}
+
+// Check if user is admin or the kasir themselves
+if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+  return res.status(403).json({ message: 'Tidak memiliki izin untuk mengakses data ini' });
+}
+
+res.json(kasir);
+} catch (error) {
+console.error('Get kasir error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Get kasir stats
+router.get('/:id/stats', auth, async (req, res) => {
+try {
+const { startDate, endDate } = req.query;
+
+const kasir = await User.findById(req.params.id).select('-password');
+if (!kasir) {
+  return res.status(404).json({ message: 'Kasir tidak ditemukan' });
+}
+
+// Check if user is admin or the kasir themselves
+if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+  return res.status(403).json({ message: 'Tidak memiliki izin untuk mengakses data ini' });
+}
+
+// Build date filter
+const dateFilter = { kasirId: kasir._id };
+
+if (startDate && endDate) {
+  dateFilter.tanggal = {
+    $gte: new Date(startDate),
+    $lte: new Date(endDate)
+  };
+}
+
+// Get monthly stats
+const monthlyStats = await Nota.aggregate([
+  { $match: dateFilter },
+  {
+    $group: {
+      _id: {
+        year: { $year: '$tanggal' },
+        month: { $month: '$tanggal' }
+      },
+      jumlahNota: { $sum: 1 },
+      totalPendapatan: { $sum: '$totalHarga' }
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      bulan: {
+        $concat: [
+          { $toString: '$_id.year' },
+          '-',
+          {
+            $cond: {
+              if: { $lt: ['$_id.month', 10] },
+              then: { $concat: ['0', { $toString: '$_id.month' }] },
+              else: { $toString: '$_id.month' }
+            }
+          }
+        ]
+      },
+      jumlahNota: 1,
+      totalPendapatan: 1,
+      rataRata: { $divide: ['$totalPendapatan', '$jumlahNota'] }
+    }
+  },
+  { $sort: { bulan: 1 } }
+]);
+
+// Get summary
+const summary = await Nota.aggregate([
+  { $match: dateFilter },
+  {
+    $group: {
+      _id: null,
+      totalNota: { $sum: 1 },
+      totalPendapatan: { $sum: '$totalHarga' }
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      totalNota: 1,
+      totalPendapatan: 1,
+      rataRata: {
+        $cond: {
+          if: { $eq: ['$totalNota', 0] },
+          then: 0,
+          else: { $divide: ['$totalPendapatan', '$totalNota'] }
+        }
+      }
+    }
+  }
+]);
+
+res.json({
+  monthlyStats,
+  summary: summary.length > 0 ? summary[0] : { totalNota: 0, totalPendapatan: 0, rataRata: 0 }
+});
+} catch (error) {
+console.error('Get kasir stats error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Get kasir transactions
+router.get('/:id/transactions', auth, async (req, res) => {
+try {
+const { page = 1, limit = 10, startDate, endDate } = req.query;
+
+const kasir = await User.findById(req.params.id).select('-password');
+if (!kasir) {
+  return res.status(404).json({ message: 'Kasir tidak ditemukan' });
+}
+
+// Check if user is admin or the kasir themselves
+if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+  return res.status(403).json({ message: 'Tidak memiliki izin untuk mengakses data ini' });
+}
+
+// Build filter
+const filter = { kasirId: kasir._id };
+
+if (startDate && endDate) {
+  filter.tanggal = {
+    $gte: new Date(startDate),
+    $lte: new Date(endDate)
+  };
+}
+
+// Get total count
+const total = await Nota.countDocuments(filter);
+
+// Get transactions
+const transactions = await Nota.find(filter)
+  .sort({ tanggal: -1 })
+  .skip((page - 1) * limit)
+  .limit(parseInt(limit));
+
+res.json({
+  transactions,
+  total,
+  page: parseInt(page),
+  totalPages: Math.ceil(total / limit)
+});
+} catch (error) {
+console.error('Get kasir transactions error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Create kasir
+router.post('/', auth, adminOnly, async (req, res) => {
+try {
+const { username, password, nama, email, noHp, catatan } = req.body;
+
+// Check if username already exists
+const usernameExists = await User.findOne({ username });
+if (usernameExists) {
+  return res.status(400).json({ message: 'Username sudah digunakan' });
+}
+
+// Create new kasir
+const kasir = new User({
+  username,
+  password, // will be hashed by pre-save hook
+  nama,
+  role: 'kasir',
+  email,
+  noHp,
+  catatan
+});
+
+await kasir.save();
+
+// Remove password from response
+const kasirResponse = kasir.toObject();
+delete kasirResponse.password;
+
+res.status(201).json(kasirResponse);
+} catch (error) {
+console.error('Create kasir error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Update kasir
+router.put('/:id', auth, async (req, res) => {
+try {
+const { nama, password, email, noHp, catatan } = req.body;
+
+// Check if kasir exists
+const kasir = await User.findById(req.params.id);
+if (!kasir) {
+  return res.status(404).json({ message: 'Kasir tidak ditemukan' });
+}
+
+// Check if user is admin or the kasir themselves
+if (req.user.role !== 'admin' && req.user.id !== req.params.id) {
+  return res.status(403).json({ message: 'Tidak memiliki izin untuk mengubah data ini' });
+}
+
+// Update kasir
+kasir.nama = nama;
+if (email) kasir.email = email;
+if (noHp) kasir.noHp = noHp;
+
+// Only admin can update catatan
+if (req.user.role === 'admin' && catatan !== undefined) {
+  kasir.catatan = catatan;
+}
+
+// Update password if provided
+if (password) {
+  const salt = await bcrypt.genSalt(10);
+  kasir.password = await bcrypt.hash(password, salt);
+}
+
+kasir.updatedAt = Date.now();
+
+await kasir.save();
+
+// Remove password from response
+const kasirResponse = kasir.toObject();
+delete kasirResponse.password;
+
+res.json(kasirResponse);
+} catch (error) {
+console.error('Update kasir error:', error);
+res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+}
+});
+
+// Delete kasir
+router.delete('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    console.log(`[DELETE] Menghapus kasir dengan ID: ${req.params.id}`);
+    
+    // Check if kasir exists
+    const kasir = await User.findById(req.params.id);
+    if (!kasir) {
+      console.log(`[DELETE] Kasir dengan ID ${req.params.id} tidak ditemukan`);
+      return res.status(404).json({ message: 'Kasir tidak ditemukan' });
+    }
+    
+    console.log(`[DELETE] Kasir ditemukan: ${kasir.nama}`);
+    
+    // Check if kasir has notas - konversi ID dengan aman
+    let kasirId = req.params.id;
+    
+    // Jika menggunakan ObjectId, pastikan valid
+    try {
+      if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+        kasirId = new mongoose.Types.ObjectId(req.params.id);
+      }
+    } catch (err) {
+      console.error('[DELETE] Error saat membuat ObjectId untuk kasir:', err);
+      // Tetap gunakan ID string jika gagal konversi
+    }
+    
+    console.log(`[DELETE] Memeriksa referensi nota untuk kasir ID: ${kasirId}`);
+    
+    // Gunakan agregasi untuk pengecekan yang lebih aman
+    const notaCheck = await Nota.aggregate([
+      { 
+        $match: { 
+          $expr: { 
+            $eq: [
+              { $toString: '$kasirId' }, 
+              req.params.id
+            ] 
+          } 
+        } 
+      },
+      { $limit: 1 }
+    ]);
+    
+    const notaCount = notaCheck.length;
+    console.log(`[DELETE] Jumlah nota yang mereferensikan kasir: ${notaCount}`);
+    
+    if (notaCount > 0) {
+      console.log(`[DELETE] Kasir tidak dapat dihapus karena memiliki data transaksi`);
+      return res.status(400).json({
+        message: 'Kasir tidak dapat dihapus karena memiliki data transaksi'
+      });
+    }
+    
+    // Delete kasir - Gunakan deleteOne() sebagai pengganti remove()
+    console.log(`[DELETE] Menghapus kasir dari database...`);
+    const deleteResult = await User.deleteOne({ _id: req.params.id });
+    console.log(`[DELETE] Hasil penghapusan kasir: ${JSON.stringify(deleteResult)}`);
+    
+    res.json({ message: 'Kasir berhasil dihapus' });
+  } catch (error) {
+    console.error('[DELETE] Error saat menghapus kasir:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/kategori.js
+const express = require('express');
+const Kategori = require('../models/Kategori');
+const mongoose = require('mongoose');
+const Barang = require('../models/Barang');
+const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
+
+const router = express.Router();
+
+// Get all kategoris
+router.get('/', auth, async (req, res) => {
+  try {
+    const kategoris = await Kategori.find().sort({ nama: 1 });
+    
+    // Count barang in each kategori
+    const kategorisWithCount = await Promise.all(
+      kategoris.map(async (kategori) => {
+        const jumlahBarang = await Barang.countDocuments({ kategoriId: kategori._id });
+        return {
+          ...kategori.toObject(),
+          jumlahBarang
+        };
+      })
+    );
+    
+    res.json(kategorisWithCount);
+  } catch (error) {
+    console.error('Get kategoris error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Create kategori
+router.post('/', auth, adminOnly, async (req, res) => {
+  try {
+    const { nama, deskripsi } = req.body;
+    
+    // Check if kategori already exists
+    const kategoriExists = await Kategori.findOne({ nama });
+    if (kategoriExists) {
+      return res.status(400).json({ message: 'Kategori dengan nama tersebut sudah ada' });
+    }
+    
+    // Create new kategori
+    const kategori = new Kategori({
+      nama,
+      deskripsi
+    });
+    
+    await kategori.save();
+    res.status(201).json(kategori);
+  } catch (error) {
+    console.error('Create kategori error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Update kategori
+router.put('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { nama, deskripsi } = req.body;
+    
+    // Check if kategori exists
+    const kategori = await Kategori.findById(req.params.id);
+    if (!kategori) {
+      return res.status(404).json({ message: 'Kategori tidak ditemukan' });
+    }
+    
+    // Check if name already exists (except for current kategori)
+    if (nama !== kategori.nama) {
+      const nameExists = await Kategori.findOne({ nama });
+      if (nameExists) {
+        return res.status(400).json({ message: 'Kategori dengan nama tersebut sudah ada' });
+      }
+    }
+    
+    // Update kategori
+    kategori.nama = nama;
+    kategori.deskripsi = deskripsi;
+    kategori.updatedAt = Date.now();
+    
+    await kategori.save();
+    res.json(kategori);
+  } catch (error) {
+    console.error('Update kategori error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Delete kategori
+router.delete('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    // Check if kategori exists
+    const kategori = await Kategori.findById(req.params.id);
+    if (!kategori) {
+      return res.status(404).json({ message: 'Kategori tidak ditemukan' });
+    }
+    
+    // Check if kategori is used by any barang
+    const barangCount = await Barang.countDocuments({ kategoriId: req.params.id });
+    if (barangCount > 0) {
+      return res.status(400).json({ 
+        message: 'Kategori tidak dapat dihapus karena masih digunakan oleh barang' 
+      });
+    }
+    
+    // Delete kategori
+    await kategori.remove();
+    res.json({ message: 'Kategori berhasil dihapus' });
+  } catch (error) {
+    console.error('Delete kategori error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/nota.js
+const express = require('express');
+const mongoose = require('mongoose');
+const Nota = require('../models/Nota');
+const Barang = require('../models/Barang');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+
+const router = express.Router();
+
+// Get all notas with pagination and filters
+router.get('/', auth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    const { search, startDate, endDate, sort } = req.query;
+    
+    // Build filter
+    const filter = {};
+    
+    if (search) {
+      filter.$or = [
+        { nomorNota: { $regex: search, $options: 'i' } },
+        { namaPelanggan: { $regex: search, $options: 'i' } },
+        { noHpPelanggan: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    if (startDate && endDate) {
+      filter.tanggal = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    // Build sort
+    let sortOption = { tanggal: -1 }; // Default sort by date descending
+    
+    if (sort) {
+      const [field, order] = sort.split('_');
+      
+      if (field === 'tanggal') {
+        sortOption = { tanggal: order === 'asc' ? 1 : -1 };
+      } else if (field === 'totalHarga') {
+        sortOption = { totalHarga: order === 'asc' ? 1 : -1 };
+      }
+    }
+    
+    // Get total count
+    const total = await Nota.countDocuments(filter);
+    
+    // Get notas
+    const notas = await Nota.find(filter)
+      .populate('kasirId', 'nama')
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit);
+    
+    // Format response
+    const notasFormatted = notas.map(nota => {
+      const n = nota.toObject();
+      n.kasir = n.kasirId;
+      delete n.kasirId;
+      return n;
+    });
+    
+    res.json({
+      notas: notasFormatted,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('Get notas error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// PENTING: Rute spesifik ditempatkan SEBELUM rute dengan parameter
+// Search notas
+router.get('/search', auth, async (req, res) => {
+  try {
+    const { nomorNota, noHpPelanggan } = req.query;
+    
+    // Build filter
+    const filter = {};
+    
+    if (nomorNota) {
+      filter.nomorNota = { $regex: nomorNota, $options: 'i' };
+    }
+    
+    if (noHpPelanggan) {
+      filter.noHpPelanggan = { $regex: noHpPelanggan, $options: 'i' };
+    }
+    
+    if (Object.keys(filter).length === 0) {
+      return res.json([]);
+    }
+    
+    // Get notas
+    const notas = await Nota.find(filter)
+      .sort({ tanggal: -1 })
+      .limit(10);
+    
+    res.json(notas);
+  } catch (error) {
+    console.error('Search notas error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get nota by ID - harus ditempatkan SETELAH rute spesifik
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const nota = await Nota.findById(req.params.id)
+      .populate('kasirId', 'nama');
+    
+    if (!nota) {
+      return res.status(404).json({ message: 'Nota tidak ditemukan' });
+    }
+    
+    // Format response
+    const notaFormatted = nota.toObject();
+    notaFormatted.kasir = notaFormatted.kasirId;
+    delete notaFormatted.kasirId;
+    
+    res.json(notaFormatted);
+  } catch (error) {
+    console.error('Get nota error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Create new nota
+router.post('/', auth, async (req, res) => {
+  try {
+    console.log('Received nota data:', JSON.stringify(req.body, null, 2));
+    
+    const {
+      nomorNota,
+      tanggal,
+      namaPelanggan,
+      noHpPelanggan,
+      alamatPelanggan,
+      kasirId,
+      items,
+      totalHarga,
+      catatan
+    } = req.body;
+    
+    // Validasi dasar
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: 'Nota harus memiliki minimal 1 barang' });
+    }
+    
+    // Buat nota baru
+    const nota = new Nota({
+      nomorNota,
+      tanggal: tanggal || new Date(),
+      namaPelanggan,
+      noHpPelanggan,
+      alamatPelanggan,
+      kasirId: kasirId || req.user.id,
+      items, // Gunakan items langsung dari request
+      totalHarga,
+      catatan
+    });
+    
+    const savedNota = await nota.save();
+    
+    // Update stok untuk setiap item
+    for (const item of items) {
+      await Barang.findByIdAndUpdate(
+        item.barangId,
+        { 
+          $inc: { 
+            stokBagus: -item.jumlah,
+            jumlahTerjual: item.jumlah // Pastikan jumlahTerjual diperbarui
+          } 
+        }
+      );
+      
+      console.log(`Updated stock for ${item.namaBarang}: -${item.jumlah} from stokBagus, +${item.jumlah} to jumlahTerjual`);
+    }
+    
+    res.status(201).json(savedNota);
+  } catch (error) {
+    console.error('Create nota error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server: ' + error.message });
+  }
+});
+
+// Tambahkan rute baru untuk update status pengiriman
+router.patch('/:id/status', auth, async (req, res) => {
+  try {
+    const { statusPengiriman } = req.body;
+    
+    if (typeof statusPengiriman !== 'boolean') {
+      return res.status(400).json({ message: 'Status pengiriman harus berupa boolean' });
+    }
+    
+    const nota = await Nota.findById(req.params.id);
+    
+    if (!nota) {
+      return res.status(404).json({ message: 'Nota tidak ditemukan' });
+    }
+    
+    // Update status pengiriman
+    nota.statusPengiriman = statusPengiriman;
+    await nota.save();
+    
+    res.json({ 
+      message: `Status pengiriman berhasil ${statusPengiriman ? 'diaktifkan' : 'dinonaktifkan'}`,
+      nota
+    });
+  } catch (error) {
+    console.error('Update status pengiriman error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Delete nota
+router.delete('/:id', auth, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    // Check if nota exists
+    const nota = await Nota.findById(req.params.id).session(session);
+    if (!nota) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Nota tidak ditemukan' });
+    }
+    
+    // Only admin can delete nota (changed from previous permission check)
+    if (req.user.role !== 'admin') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Hanya admin yang dapat menghapus nota' });
+    }
+    
+    // Restore stock for each item
+    for (const item of nota.items) {
+      await Barang.findByIdAndUpdate(
+        item.barangId,
+        {
+          $inc: {
+            stokBagus: item.jumlah,
+            jumlahTerjual: -item.jumlah // Kurangi jumlahTerjual saat nota dihapus
+          }
+        },
+        { session }
+      );
+      
+      console.log(`Restored stock for item ${item.namaBarang}: +${item.jumlah} to stokBagus, -${item.jumlah} from jumlahTerjual`);
+    }
+    
+    // Delete nota
+    await nota.remove({ session });
+    
+    await session.commitTransaction();
+    session.endSession();
+    
+    res.json({ message: 'Nota berhasil dihapus' });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    
+    console.error('Delete nota error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;// routes/retur.js - Versi Tanpa Transaksi
+const express = require('express');
+const mongoose = require('mongoose');
+const Retur = require('../models/Retur');
+const Nota = require('../models/Nota');
+const Barang = require('../models/Barang');
+const auth = require('../middleware/auth');
+
+const router = express.Router();
+
+// Proses retur barang - Tanpa Transaksi
+router.post('/', auth, async (req, res) => {
+  try {
+    // Log data yang diterima untuk debugging
+    console.log('Received retur data:', JSON.stringify(req.body, null, 2));
+    
+    const { notaId, items } = req.body;
+    
+    // Validasi input dasar
+    if (!notaId) {
+      return res.status(400).json({ message: 'ID Nota tidak boleh kosong' });
+    }
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: 'Daftar barang retur tidak valid' });
+    }
+    
+    // Filter items dengan jumlahRetur > 0
+    const returItems = items.filter(item => item.jumlahRetur > 0);
+    
+    if (returItems.length === 0) {
+      return res.status(400).json({ message: 'Minimal satu barang harus diretur' });
+    }
+    
+    // Validasi notaId format
+    if (!mongoose.isValidObjectId(notaId)) {
+      return res.status(400).json({ message: 'Format ID Nota tidak valid' });
+    }
+    
+    // Validasi nota
+    const nota = await Nota.findById(notaId);
+    if (!nota) {
+      return res.status(404).json({ message: 'Nota tidak ditemukan' });
+    }
+    
+    // Array untuk menyimpan semua retur yang dibuat
+    const createdReturs = [];
+    
+    // Proses setiap item retur
+    for (const item of returItems) {
+      // Validasi format barangId
+      if (!mongoose.isValidObjectId(item.barangId)) {
+        return res.status(400).json({ message: `Format ID Barang tidak valid: ${item.barangId}` });
+      }
+      
+      // Validasi jumlah retur
+      if (!item.jumlahRetur || isNaN(item.jumlahRetur) || item.jumlahRetur <= 0) {
+        return res.status(400).json({ message: `Jumlah retur untuk ${item.namaBarang} tidak valid` });
+      }
+      
+      // Cek apakah barang ada di nota
+      const notaItem = nota.items.find(i => i.barangId.toString() === item.barangId);
+      if (!notaItem) {
+        return res.status(400).json({ 
+          message: `Barang ${item.namaBarang} tidak ditemukan dalam nota ini` 
+        });
+      }
+      
+      // Cek jumlah retur tidak melebihi jumlah pembelian
+      if (item.jumlahRetur > notaItem.jumlah) {
+        return res.status(400).json({ 
+          message: `Jumlah retur ${item.jumlahRetur} untuk ${item.namaBarang} melebihi jumlah pembelian (${notaItem.jumlah})` 
+        });
+      }
+      
+      // Cek keberadaan barang di database
+      const barang = await Barang.findById(item.barangId);
+      if (!barang) {
+        return res.status(404).json({ 
+          message: `Barang ${item.namaBarang} tidak ditemukan di database` 
+        });
+      }
+      
+      // Buat dokumen retur baru
+      try {
+        const returDoc = new Retur({
+          notaId: nota._id,
+          nomorNota: nota.nomorNota,
+          barangId: item.barangId,
+          namaBarang: item.namaBarang,
+          grade: item.grade,
+          jumlahRetur: item.jumlahRetur,
+          hargaSatuan: item.hargaSatuan || notaItem.hargaSatuan,
+          potonganHarga: item.potonganHarga || notaItem.potonganHarga || 0,
+          kondisi: item.kondisi,
+          alasan: item.alasan,
+          tanggal: new Date(),
+          kasirId: req.user.id
+        });
+        
+        // Simpan dokumen retur
+        const savedRetur = await returDoc.save();
+        createdReturs.push(savedRetur);
+        
+        // Update stok barang sesuai kondisi
+        const updateFields = { $inc: {} };
+        
+        if (item.kondisi === 'bagus') {
+          // Untuk barang kondisi bagus, tambah stok bagus dan kurangi jumlah terjual
+          updateFields.$inc.stokBagus = item.jumlahRetur;
+          updateFields.$inc.jumlahTerjual = -item.jumlahRetur;
+        } else if (item.kondisi === 'rusak') {
+          // Untuk barang rusak, tambah stok rusak
+          updateFields.$inc.stokRusak = item.jumlahRetur;
+        } else {
+          // Jika kondisi barang tidak valid
+          await Retur.findByIdAndDelete(savedRetur._id); // Hapus retur yang sudah dibuat
+          return res.status(400).json({ 
+            message: `Kondisi barang '${item.kondisi}' tidak valid. Gunakan 'bagus' atau 'rusak'` 
+          });
+        }
+        
+        // Update barang di database
+        await Barang.findByIdAndUpdate(item.barangId, updateFields);
+        
+      } catch (itemError) {
+        console.error(`Error creating retur for item ${item.namaBarang}:`, itemError);
+        return res.status(500).json({ 
+          message: `Gagal membuat retur untuk ${item.namaBarang}: ${itemError.message}` 
+        });
+      }
+    }
+    
+    res.status(201).json({
+      message: 'Retur berhasil diproses',
+      returs: createdReturs
+    });
+    
+  } catch (error) {
+    console.error('Error processing retur:', error);
+    
+    // Kirim pesan error yang informatif
+    res.status(500).json({ 
+      message: 'Terjadi kesalahan pada server saat memproses retur',
+      error: error.message
+    });
+  }
+});
+
+// Get all returs with filters
+router.get('/', auth, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    // Build filter
+    const filter = {};
+    
+    if (startDate && endDate) {
+      filter.tanggal = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    // Get returs
+    const returs = await Retur.find(filter)
+      .sort({ tanggal: -1 })
+      .populate('notaId', 'nomorNota');
+    
+    // Format response - keeping notaId for linking
+    const formattedReturs = await Promise.all(
+      returs.map(async (retur) => {
+        const r = retur.toObject();
+        r.nomorNota = r.notaId?.nomorNota || 'Nota tidak tersedia';
+        // Keep notaId for router link purposes
+        return r;
+      })
+    );
+    
+    res.json(formattedReturs);
+  } catch (error) {
+    console.error('Get returs error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get retur by ID
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const retur = await Retur.findById(req.params.id)
+      .populate('notaId', 'nomorNota tanggal namaPelanggan noHpPelanggan');
+    
+    if (!retur) {
+      return res.status(404).json({ message: 'Retur tidak ditemukan' });
+    }
+    
+    res.json(retur);
+  } catch (error) {
+    console.error('Get retur by id error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Endpoint untuk mendapatkan retur berdasarkan ID nota tunggal
+router.get('/nota/:notaId', auth, async (req, res) => {
+  try {
+    const { notaId } = req.params;
+    
+    if (!mongoose.isValidObjectId(notaId)) {
+      return res.status(400).json({ message: 'ID nota tidak valid' });
+    }
+    
+    const returs = await Retur.find({
+      notaId: notaId
+    }).select('_id notaId');
+    
+    res.json(returs);
+  } catch (error) {
+    console.error('Get returs by nota id error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Tambahkan rute baru untuk mengambil retur berdasarkan nota IDs
+router.get('/by-nota', auth, async (req, res) => {
+  try {
+    const { notaIds } = req.query;
+    
+    if (!notaIds) {
+      return res.status(400).json({ message: 'Parameter notaIds diperlukan' });
+    }
+    
+    // Pastikan array notaId valid
+    let notaIdArray;
+    try {
+      notaIdArray = notaIds.split(',').filter(id => mongoose.Types.ObjectId.isValid(id));
+    } catch (e) {
+      return res.status(400).json({ message: 'Format notaIds tidak valid' });
+    }
+    
+    if (notaIdArray.length === 0) {
+      return res.json([]);
+    }
+    
+    // Find all returs that are associated with any of the provided nota IDs
+    const returs = await Retur.find({
+      notaId: { $in: notaIdArray }
+    }).select('notaId');
+    
+    // Format response untuk mempermudah penggunaannya di frontend
+    const formattedReturs = returs.map(r => ({
+      notaId: r.notaId.toString()
+    }));
+    
+    res.json(formattedReturs);
+  } catch (error) {
+    console.error('Get returs by nota ids error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server: ' + error.message });
+  }
+});
+
+// Update price information for a retur
+router.patch('/:id/update-price', auth, async (req, res) => {
+  try {
+    const { hargaSatuan, potonganHarga } = req.body;
+    
+    if (hargaSatuan === undefined) {
+      return res.status(400).json({ message: 'Parameter hargaSatuan diperlukan' });
+    }
+    
+    const retur = await Retur.findById(req.params.id);
+    if (!retur) {
+      return res.status(404).json({ message: 'Retur tidak ditemukan' });
+    }
+    
+    // Update price information
+    retur.hargaSatuan = hargaSatuan;
+    
+    if (potonganHarga !== undefined) {
+      retur.potonganHarga = potonganHarga;
+    }
+    
+    await retur.save();
+    
+    res.json({ 
+      message: 'Informasi harga retur berhasil diperbarui',
+      retur
+    });
+  } catch (error) {
+    console.error('Update retur price error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router; // routes/supplier.js
+const express = require('express');
+const mongoose = require('mongoose');
+const Supplier = require('../models/Supplier');
+const Pasokan = require('../models/Pasokan');
+const Barang = require('../models/Barang');
+const auth = require('../middleware/auth');
+const adminOnly = require('../middleware/adminOnly');
+
+const router = express.Router();
+
+// Get all suppliers with pagination and filters
+router.get('/', auth, adminOnly, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    
+    const { search, sort } = req.query;
+    
+    // Build filter
+    const filter = {};
+    
+    if (search) {
+      filter.$or = [
+        { nama: { $regex: search, $options: 'i' } },
+        { noHp: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Build sort
+    let sortOption = { nama: 1 }; // Default sort by name ascending
+    
+    if (sort) {
+      const [field, order] = sort.split('_');
+      
+      if (field === 'nama') {
+        sortOption = { nama: order === 'asc' ? 1 : -1 };
+      } else if (field === 'created') {
+        sortOption = { createdAt: order === 'asc' ? 1 : -1 };
+      }
+    }
+    
+    // Get total count
+    const total = await Supplier.countDocuments(filter);
+    
+    // Get suppliers
+    const suppliers = await Supplier.find(filter)
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limit);
+    
+    // Check payment status for each supplier
+    const suppliersWithStatus = await Promise.all(
+      suppliers.map(async (supplier) => {
+        const s = supplier.toObject();
+        
+        // Check for overdue payments
+        const overdueCount = await Pasokan.countDocuments({
+          supplierId: supplier._id,
+          statusPembayaran: 'belum dibayar',
+          tanggalJatuhTempo: { $lt: new Date() }
+        });
+        
+        // Check for pending payments
+        const pendingCount = await Pasokan.countDocuments({
+          supplierId: supplier._id,
+          statusPembayaran: 'belum dibayar',
+          tanggalJatuhTempo: { $gte: new Date() }
+        });
+        
+        s.hasOverduePayments = overdueCount > 0;
+        s.hasPendingPayments = pendingCount > 0;
+        
+        return s;
+      })
+    );
+    
+    res.json({
+      suppliers: suppliersWithStatus,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('Get suppliers error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get due payments
+router.get('/due-payments', auth, adminOnly, async (req, res) => {
+  try {
+    // Get due soon payments (due in 7 days or already overdue)
+    const sevenDaysLater = new Date();
+    sevenDaysLater.setDate(sevenDaysLater.getDate() + 7);
+    
+    const dueSoonPayments = await Pasokan.find({
+      statusPembayaran: 'belum dibayar',
+      tanggalJatuhTempo: { $lte: sevenDaysLater }
+    })
+      .sort({ tanggalJatuhTempo: 1 })
+      .populate('supplierId', 'nama');
+    
+    // Format response
+    const formattedPayments = dueSoonPayments.map(payment => {
+      const p = payment.toObject();
+      p.supplier = p.supplierId;
+      delete p.supplierId;
+      return p;
+    });
+    
+    res.json(formattedPayments);
+  } catch (error) {
+    console.error('Get due payments error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get supplier by ID
+router.get('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const supplier = await Supplier.findById(req.params.id);
+    
+    if (!supplier) {
+      return res.status(404).json({ message: 'Supplier tidak ditemukan' });
+    }
+    
+    res.json(supplier);
+  } catch (error) {
+    console.error('Get supplier error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Get supplier supplies
+router.get('/:id/supplies', auth, adminOnly, async (req, res) => {
+  try {
+    const supplierId = req.params.id;
+    
+    // Get supplies
+    const supplies = await Pasokan.find({ supplierId })
+      .sort({ tanggalPasok: -1 });
+    
+    // Get total count
+    const total = supplies.length;
+    
+    // Calculate total purchase
+    const totalPurchase = supplies.reduce((acc, supply) => acc + supply.totalHarga, 0);
+    
+    // Populate items with barang info
+    const suppliesWithItems = await Promise.all(
+      supplies.map(async (supply) => {
+        const s = supply.toObject();
+        
+        // Get barang info for each item
+        s.items = await Promise.all(
+          s.items.map(async (item) => {
+            const barang = await Barang.findById(item.barangId).select('nama');
+            return {
+              ...item,
+              barang: barang || { nama: 'Barang tidak tersedia' }
+            };
+          })
+        );
+        
+        return s;
+      })
+    );
+    
+    res.json({
+      supplies: suppliesWithItems,
+      total,
+      totalPurchase
+    });
+  } catch (error) {
+    console.error('Get supplier supplies error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Mark supply as paid
+router.put('/supply/:id/paid', auth, adminOnly, async (req, res) => {
+  try {
+    // Find supply
+    const supply = await Pasokan.findById(req.params.id);
+    
+    if (!supply) {
+      return res.status(404).json({ message: 'Pasokan tidak ditemukan' });
+    }
+    
+    // Update payment status
+    supply.statusPembayaran = 'sudah dibayar';
+    supply.updatedAt = Date.now();
+    
+    await supply.save();
+    res.json({ message: 'Pasokan berhasil ditandai sebagai lunas' });
+  } catch (error) {
+    console.error('Mark supply as paid error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Create supplier
+router.post('/', auth, adminOnly, async (req, res) => {
+  try {
+    const { nama, alamat, noHp, email, catatanKinerja } = req.body;
+    
+    // Create new supplier
+    const supplier = new Supplier({
+      nama,
+      alamat,
+      noHp,
+      email,
+      catatanKinerja
+    });
+    
+    await supplier.save();
+    res.status(201).json(supplier);
+  } catch (error) {
+    console.error('Create supplier error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Create supply
+router.post('/supply', auth, adminOnly, async (req, res) => {
+  try {
+    const { supplierId, tanggalPasok, tanggalJatuhTempo, items, totalHarga } = req.body;
+    
+    // Check if supplier exists
+    const supplier = await Supplier.findById(supplierId);
+    if (!supplier) {
+      return res.status(400).json({ message: 'Supplier tidak valid' });
+    }
+    
+    // Validate items
+    if (!items || items.length === 0) {
+      return res.status(400).json({ message: 'Minimal satu barang harus diisi' });
+    }
+    
+    // Check if all barangs exist
+    for (const item of items) {
+      const barang = await Barang.findById(item.barangId);
+      if (!barang) {
+        return res.status(400).json({ message: `Barang dengan ID ${item.barangId} tidak ditemukan` });
+      }
+    }
+    
+    // Create new supply
+    const supply = new Pasokan({
+      supplierId,
+      tanggalPasok,
+      tanggalJatuhTempo,
+      items,
+      totalHarga,
+      statusPembayaran: 'belum dibayar'
+    });
+    
+    await supply.save();
+    
+    // Update barang stock
+    for (const item of items) {
+      await Barang.findByIdAndUpdate(
+        item.barangId,
+        { $inc: { stokBagus: item.jumlah } }
+      );
+    }
+    
+    res.status(201).json(supply);
+  } catch (error) {
+    console.error('Create supply error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Update supplier
+router.put('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { nama, alamat, noHp, email, catatanKinerja } = req.body;
+    
+    // Check if supplier exists
+    const supplier = await Supplier.findById(req.params.id);
+    if (!supplier) {
+      return res.status(404).json({ message: 'Supplier tidak ditemukan' });
+    }
+    
+    // Update supplier
+    supplier.nama = nama;
+    supplier.alamat = alamat;
+    supplier.noHp = noHp;
+    supplier.email = email;
+    supplier.catatanKinerja = catatanKinerja;
+    supplier.updatedAt = Date.now();
+    
+    await supplier.save();
+    res.json(supplier);
+  } catch (error) {
+    console.error('Update supplier error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// Delete supplier
+router.delete('/:id', auth, adminOnly, async (req, res) => {
+  try {
+    console.log(`[DELETE] Menghapus supplier dengan ID: ${req.params.id}`);
+    
+    // Check if supplier exists
+    const supplier = await Supplier.findById(req.params.id);
+    if (!supplier) {
+      console.log(`[DELETE] Supplier dengan ID ${req.params.id} tidak ditemukan`);
+      return res.status(404).json({ message: 'Supplier tidak ditemukan' });
+    }
+    
+    console.log(`[DELETE] Supplier ditemukan: ${supplier.nama}`);
+    
+    // Check if supplier has supplies - konversi ID dengan aman
+    let supplierId = req.params.id;
+    
+    // Jika menggunakan ObjectId, pastikan valid
+    try {
+      if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+        supplierId = new mongoose.Types.ObjectId(req.params.id);
+      }
+    } catch (err) {
+      console.error('[DELETE] Error saat membuat ObjectId untuk supplier:', err);
+      // Tetap gunakan ID string jika gagal konversi
+    }
+    
+    console.log(`[DELETE] Memeriksa referensi pasokan untuk supplier ID: ${supplierId}`);
+    
+    // Gunakan agregasi untuk pengecekan yang lebih aman
+    const pasokanCheck = await Pasokan.aggregate([
+      { 
+        $match: { 
+          $expr: { 
+            $eq: [
+              { $toString: '$supplierId' }, 
+              req.params.id
+            ] 
+          } 
+        } 
+      },
+      { $limit: 1 }
+    ]);
+    
+    const suppliesCount = pasokanCheck.length;
+    console.log(`[DELETE] Jumlah pasokan yang mereferensikan supplier: ${suppliesCount}`);
+    
+    if (suppliesCount > 0) {
+      console.log(`[DELETE] Supplier tidak dapat dihapus karena memiliki data pasokan`);
+      return res.status(400).json({
+        message: 'Supplier tidak dapat dihapus karena memiliki data pasokan'
+      });
+    }
+    
+    // Delete supplier - Gunakan deleteOne() sebagai pengganti remove()
+    console.log(`[DELETE] Menghapus supplier dari database...`);
+    const deleteResult = await Supplier.deleteOne({ _id: req.params.id });
+    console.log(`[DELETE] Hasil penghapusan supplier: ${JSON.stringify(deleteResult)}`);
+    
+    res.json({ message: 'Supplier berhasil dihapus' });
+  } catch (error) {
+    console.error('[DELETE] Error saat menghapus supplier:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;

@@ -1,0 +1,122 @@
+// routes/dashboard.js
+const express = require('express');
+const Nota = require('../models/Nota');
+const Barang = require('../models/Barang');
+const User = require('../models/User');
+const auth = require('../middleware/auth');
+
+const router = express.Router();
+
+router.get('/', auth, async (req, res) => {
+  try {
+    // Get total pendapatan
+    const pendapatanResult = await Nota.aggregate([
+      { $group: { _id: null, totalPendapatan: { $sum: '$totalHarga' } } }
+    ]);
+    
+    const totalPendapatan = pendapatanResult.length > 0 ? pendapatanResult[0].totalPendapatan : 0;
+    
+    // Get total nota
+    const totalNota = await Nota.countDocuments();
+    
+    // Get barang terlaris
+    const barangTerlaris = await Barang.findOne()
+      .sort({ jumlahTerjual: -1 })
+      .select('nama jumlahTerjual');
+    
+    // Prepare user roles to include both kasir and admin
+    const userRoles = ['kasir', 'admin'];
+    
+    // Get user data (kasir and admin)
+    const userData = await User.aggregate([
+      { $match: { role: { $in: userRoles } } },
+      {
+        $lookup: {
+          from: 'notas',
+          localField: '_id',
+          foreignField: 'kasirId',
+          as: 'notas'
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          nama: 1,
+          role: 1,
+          jumlahNota: { $size: '$notas' },
+          totalPendapatan: { $sum: '$notas.totalHarga' },
+          rataRata: {
+            $cond: [
+              { $eq: [{ $size: '$notas' }, 0] },
+              0,
+              { $divide: [{ $sum: '$notas.totalHarga' }, { $size: '$notas' }] }
+            ]
+          }
+        }
+      },
+      { $sort: { totalPendapatan: -1 } }
+    ]);
+    
+    // Get weekly data (last 7 days)
+    const today = new Date();
+    const lastWeek = new Date();
+    lastWeek.setDate(lastWeek.getDate() - 6);
+    
+    const weeklyData = [];
+    
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(lastWeek);
+      date.setDate(lastWeek.getDate() + i);
+      
+      const dayStart = new Date(date.setHours(0, 0, 0, 0));
+      const dayEnd = new Date(date.setHours(23, 59, 59, 999));
+      
+      const dayData = {
+        tanggal: dayStart.toISOString().split('T')[0],
+        users: []
+      };
+      
+      // Get data for each user on this day
+      for (const user of userData) {
+        const userDailyData = await Nota.aggregate([
+          {
+            $match: {
+              kasirId: user._id,
+              tanggal: { $gte: dayStart, $lte: dayEnd }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              pendapatan: { $sum: '$totalHarga' },
+              jumlahNota: { $sum: 1 }
+            }
+          }
+        ]);
+        
+        dayData.users.push({
+          _id: user._id,
+          nama: user.nama,
+          role: user.role,
+          pendapatan: userDailyData.length > 0 ? userDailyData[0].pendapatan : 0,
+          jumlahNota: userDailyData.length > 0 ? userDailyData[0].jumlahNota : 0
+        });
+      }
+      
+      weeklyData.push(dayData);
+    }
+    
+    res.json({
+      totalPendapatan,
+      totalNota,
+      barangTerlaris,
+      userData,
+      weeklyData
+    });
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    res.status(500).json({ message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+module.exports = router;

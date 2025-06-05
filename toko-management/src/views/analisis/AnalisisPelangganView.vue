@@ -1,0 +1,2378 @@
+<!-- src/views/analisis/AnalisisPelangganView.vue -->
+<template>
+  <div class="analisis-container">
+    <div class="analisis-header">
+      <div class="header-left">
+        <h1 class="page-title">Analisis Pelanggan</h1>
+        <!-- <p class="page-subtitle">Lihat dan analisis data pelanggan untuk meningkatkan layanan Anda</p> -->
+      </div>
+      <div class="header-actions">
+        <button class="action-btn" @click="exportData" title="Ekspor Data">
+          <i class="fas fa-file-export"></i>
+          <span>Ekspor</span>
+        </button>
+        <button class="action-btn" @click="fetchCustomers" title="Refresh Data">
+          <i class="fas fa-sync-alt"></i>
+          <span>Refresh</span>
+        </button>
+      </div>
+    </div>
+    
+    <!-- Filter Panel -->
+    <div class="filter-panel">
+      <div class="filter-container">
+        <div class="filter-group">
+          <label for="search">Cari Pelanggan</label>
+          <div class="search-wrapper">
+            <i class="fas fa-search"></i>
+            <input 
+              type="text" 
+              id="search"
+              v-model="filters.search"
+              placeholder="Nama / No HP pelanggan"
+              class="search-input"
+            />
+            <button 
+              v-if="filters.search" 
+              class="clear-search" 
+              @click="resetFilters"
+              title="Hapus pencarian"
+            >
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+        </div>
+        
+        <div class="filter-group date-range-group">
+          <label>Rentang Waktu</label>
+          <div class="date-inputs">
+            <div class="date-input-wrapper">
+              <i class="fas fa-calendar-alt"></i>
+              <input 
+                type="date" 
+                v-model="filters.startDate"
+                class="date-input"
+              />
+            </div>
+            <div class="date-separator">
+              <span>s/d</span>
+            </div>
+            <div class="date-input-wrapper">
+              <i class="fas fa-calendar-alt"></i>
+              <input 
+                type="date" 
+                v-model="filters.endDate"
+                class="date-input"
+              />
+            </div>
+          </div>
+        </div>
+        
+        <div class="filter-group button-group">
+          <button class="apply-btn" @click="applyFilters" :disabled="isLoading">
+            <i class="fas fa-filter"></i>
+            <span>Terapkan Filter</span>
+          </button>
+        </div>
+      </div>
+      
+      <div class="quick-filters">
+        <button 
+          @click="setQuickFilter('month')" 
+          :class="['quick-filter-btn', { active: activeQuickFilter === 'month' }]">
+          Bulan Ini
+        </button>
+        <button 
+          @click="setQuickFilter('quarter')" 
+          :class="['quick-filter-btn', { active: activeQuickFilter === 'quarter' }]">
+          Kuartal Ini
+        </button>
+        <button 
+          @click="setQuickFilter('halfyear')" 
+          :class="['quick-filter-btn', { active: activeQuickFilter === 'halfyear' }]">
+          6 Bulan Terakhir
+        </button>
+        <button 
+          @click="setQuickFilter('year')" 
+          :class="['quick-filter-btn', { active: activeQuickFilter === 'year' }]">
+          Tahun Ini
+        </button>
+        <button 
+          @click="setQuickFilter('all')" 
+          :class="['quick-filter-btn', { active: activeQuickFilter === 'all' }]">
+          Semua Waktu
+        </button>
+      </div>
+    </div>
+    
+    <!-- Loading Indicator -->
+    <div v-if="isLoading" class="loading-container">
+      <div class="loading-spinner">
+        <i class="fas fa-circle-notch fa-spin"></i>
+      </div>
+      <p>Memuat data analisis pelanggan...</p>
+    </div>
+    
+    <div v-else>
+      <!-- Summary Stats Cards -->
+      <div class="stats-cards">
+        <div class="stat-card customers-card">
+          <div class="stat-icon">
+            <i class="fas fa-users"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-title">Total Pelanggan</h3>
+            <div class="stat-value">{{ summary.totalPelanggan }}</div>
+            <div v-if="comparisonData.pelanggan" class="stat-comparison" :class="getComparisonClass(comparisonData.pelanggan.percentage)">
+              <i :class="getComparisonIcon(comparisonData.pelanggan.percentage)"></i>
+              <span>{{ Math.abs(comparisonData.pelanggan.percentage) }}% {{ getComparisonText(comparisonData.pelanggan.percentage) }}</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="stat-card transactions-card">
+          <div class="stat-icon">
+            <i class="fas fa-receipt"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-title">Total Transaksi</h3>
+            <div class="stat-value">{{ summary.totalTransaksi }}</div>
+            <div v-if="comparisonData.transaksi" class="stat-comparison" :class="getComparisonClass(comparisonData.transaksi.percentage)">
+              <i :class="getComparisonIcon(comparisonData.transaksi.percentage)"></i>
+              <span>{{ Math.abs(comparisonData.transaksi.percentage) }}% {{ getComparisonText(comparisonData.transaksi.percentage) }}</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="stat-card average-card">
+          <div class="stat-icon">
+            <i class="fas fa-money-bill-wave"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-title">Rata-rata Belanja</h3>
+            <div class="stat-value">Rp {{ formatCurrency(summary.rataRata) }}</div>
+            <div v-if="comparisonData.rataRata" class="stat-comparison" :class="getComparisonClass(comparisonData.rataRata.percentage)">
+              <i :class="getComparisonIcon(comparisonData.rataRata.percentage)"></i>
+              <span>{{ Math.abs(comparisonData.rataRata.percentage) }}% {{ getComparisonText(comparisonData.rataRata.percentage) }}</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="stat-card frequency-card">
+          <div class="stat-icon">
+            <i class="fas fa-calendar-check"></i>
+          </div>
+          <div class="stat-content">
+            <h3 class="stat-title">Frekuensi Belanja</h3>
+            <div class="stat-value">{{ (summary.totalTransaksi / (summary.totalPelanggan || 1)).toFixed(1) }}x</div>
+            <p class="stat-subtitle">rata-rata kunjungan per pelanggan</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Top Customers Chart -->
+      <div class="chart-section">
+        <div class="chart-container">
+          <div class="chart-header">
+            <h2>Top 10 Pelanggan Berdasarkan Nilai Transaksi</h2>
+            <div class="chart-actions">
+              <!-- Customer Identifier Options -->
+              <div class="chart-action-group">
+                <span class="chart-action-label">Tampilkan:</span>
+                <button 
+                  class="chart-type-btn" 
+                  :class="{ active: customerIdentifier === 'name' }"
+                  @click="customerIdentifier = 'name'"
+                  title="Nama Pelanggan"
+                >
+                  <i class="fas fa-user"></i>
+                </button>
+                <button 
+                  class="chart-type-btn" 
+                  :class="{ active: customerIdentifier === 'phone' }"
+                  @click="customerIdentifier = 'phone'"
+                  title="No HP Pelanggan"
+                >
+                  <i class="fas fa-phone"></i>
+                </button>
+              </div>
+              
+              <!-- Data Type Options -->
+              <div class="chart-action-group">
+                <span class="chart-action-label">Berdasarkan:</span>
+                <button 
+                  class="chart-type-btn" 
+                  :class="{ active: chartType === 'value' }"
+                  @click="chartType = 'value'"
+                  title="Nilai Transaksi"
+                >
+                  <i class="fas fa-dollar-sign"></i>
+                </button>
+                <button 
+                  class="chart-type-btn" 
+                  :class="{ active: chartType === 'frequency' }"
+                  @click="chartType = 'frequency'"
+                  title="Frekuensi Transaksi"
+                >
+                  <i class="fas fa-chart-line"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="chart-body">
+            <div v-if="topCustomersChart.labels.length" class="chart-wrapper">
+              <Bar 
+                :data="topCustomersChart" 
+                :options="topCustomersOptions" 
+                class="customer-chart" 
+              />
+            </div>
+            <div v-else class="empty-chart">
+              <i class="fas fa-chart-bar"></i>
+              <p>Belum ada data untuk ditampilkan</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Customer Table -->
+      <div class="data-table-container">
+        <div class="table-header">
+          <h2>Daftar Pelanggan</h2>
+          <div class="table-actions">
+            <div class="table-info">
+              Menampilkan {{ customers.length }} dari {{ totalItems }} pelanggan
+            </div>
+            <button class="table-action-btn" @click="exportData" title="Ekspor ke Excel">
+              <i class="fas fa-file-excel"></i>
+              <span>Ekspor Excel</span>
+            </button>
+          </div>
+        </div>
+        <div class="table-body">
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>No</th>
+                  <th>Nama Pelanggan</th>
+                  <th>No HP</th>
+                  <th>Jumlah Transaksi</th>
+                  <th>Total Belanja</th>
+                  <th>Rata-rata Belanja</th>
+                  <th>Terakhir Belanja</th>
+                  <th>Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(customer, index) in customers" :key="index" class="data-row">
+                  <td>{{ startIndex + index + 1 }}</td>
+                  <td class="customer-name">{{ customer.namaPelanggan }}</td>
+                  <td>{{ customer.noHpPelanggan }}</td>
+                  <td>{{ customer.jumlahTransaksi }}</td>
+                  <td class="amount-cell">Rp {{ formatCurrency(customer.totalBelanja) }}</td>
+                  <td class="amount-cell">Rp {{ formatCurrency(customer.rataRata) }}</td>
+                  <td>{{ formatDate(customer.lastTransaction) }}</td>
+                  <td>
+                    <button class="detail-btn" @click="showCustomerDetail(customer)">
+                      <i class="fas fa-eye"></i>
+                      <span>Detail</span>
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="customers.length === 0">
+                  <td colspan="8" class="empty-table-message">
+                    <div class="empty-state">
+                      <template v-if="filters.search">
+                        <i class="fas fa-search"></i>
+                        <p>Tidak ada pelanggan yang sesuai dengan pencarian</p>
+                        <button class="reset-btn" @click="resetFilters">
+                          <i class="fas fa-redo"></i> Reset Pencarian
+                        </button>
+                      </template>
+                      <template v-else>
+                        <i class="fas fa-users"></i>
+                        <p>Belum ada data pelanggan untuk periode ini</p>
+                      </template>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          
+          <!-- Pagination -->
+          <div v-if="totalPages > 1" class="pagination-container">
+            <div class="pagination">
+              <button 
+                class="pagination-btn" 
+                :class="{ disabled: currentPage === 1 }"
+                @click="changePage(currentPage - 1)"
+                :disabled="currentPage === 1"
+              >
+                <i class="fas fa-chevron-left"></i>
+              </button>
+              
+              <button 
+                v-for="page in paginationRange" 
+                :key="page" 
+                class="pagination-btn page-number" 
+                :class="{ active: currentPage === page }"
+                @click="changePage(page)"
+              >
+                {{ page }}
+              </button>
+              
+              <button 
+                class="pagination-btn" 
+                :class="{ disabled: currentPage === totalPages }"
+                @click="changePage(currentPage + 1)"
+                :disabled="currentPage === totalPages"
+              >
+                <i class="fas fa-chevron-right"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Customer Detail Modal -->
+    <div class="custom-modal" :class="{ 'show': showDetailModal }">
+      <div class="modal-backdrop" @click="closeDetailModal"></div>
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>Detail Pelanggan</h3>
+            <button class="close-btn" @click="closeDetailModal">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="modal-body" v-if="selectedCustomer">
+            <div class="customer-profile">
+              <div class="customer-info">
+                <div class="customer-avatar">
+                  {{ selectedCustomer.namaPelanggan.charAt(0).toUpperCase() }}
+                </div>
+                <div>
+                  <h4>{{ selectedCustomer.namaPelanggan }}</h4>
+                  <div class="customer-contact">
+                    <span class="contact-item">
+                      <i class="fas fa-phone"></i> {{ selectedCustomer.noHpPelanggan }}
+                    </span>
+                    <span v-if="selectedCustomer.alamatPelanggan" class="contact-item">
+                      <i class="fas fa-map-marker-alt"></i> {{ selectedCustomer.alamatPelanggan }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div class="customer-summary">
+                <div class="summary-card">
+                  <div class="summary-icon">
+                    <i class="fas fa-shopping-bag"></i>
+                  </div>
+                  <div>
+                    <div class="summary-value">{{ selectedCustomer.jumlahTransaksi }}</div>
+                    <div class="summary-label">Transaksi</div>
+                  </div>
+                </div>
+                
+                <div class="summary-card">
+                  <div class="summary-icon">
+                    <i class="fas fa-money-bill-wave"></i>
+                  </div>
+                  <div>
+                    <div class="summary-value">Rp {{ formatCurrency(selectedCustomer.totalBelanja) }}</div>
+                    <div class="summary-label">Total Belanja</div>
+                  </div>
+                </div>
+                
+                <div class="summary-card">
+                  <div class="summary-icon">
+                    <i class="fas fa-calculator"></i>
+                  </div>
+                  <div>
+                    <div class="summary-value">Rp {{ formatCurrency(selectedCustomer.rataRata) }}</div>
+                    <div class="summary-label">Rata-rata Belanja</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="detail-sections">
+              <div class="detail-section">
+                <div class="section-header">
+                  <h4>
+                    <i class="fas fa-history"></i>
+                    Riwayat Transaksi
+                  </h4>
+                  <span class="section-count">{{ customerTransactions.length }} transaksi</span>
+                </div>
+                <div class="table-responsive">
+                  <table class="data-table detail-table">
+                    <thead>
+                      <tr>
+                        <th>Tanggal</th>
+                        <th>Nomor Nota</th>
+                        <th>Jumlah Item</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="transaction in customerTransactions" :key="transaction._id" class="data-row">
+                        <td>{{ formatDate(transaction.tanggal) }}</td>
+                        <td>
+                          <router-link :to="`/nota/${transaction._id}/print`" class="nota-link">
+                            {{ transaction.nomorNota }}
+                          </router-link>
+                        </td>
+                        <td>{{ transaction.items.length }} item</td>
+                        <td class="amount-cell">Rp {{ formatCurrency(transaction.totalHarga) }}</td>
+                      </tr>
+                      <tr v-if="customerTransactions.length === 0">
+                        <td colspan="4" class="empty-table-message">
+                          <div class="empty-state small">
+                            <i class="fas fa-receipt"></i>
+                            <p>Tidak ada data transaksi untuk periode ini</p>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
+              <div class="detail-section">
+                <div class="section-header">
+                  <h4>
+                    <i class="fas fa-box"></i>
+                    Produk yang Sering Dibeli
+                  </h4>
+                  <span class="section-count">{{ customerProducts.length }} produk</span>
+                </div>
+                <div class="table-responsive">
+                  <table class="data-table detail-table">
+                    <thead>
+                      <tr>
+                        <th>No</th>
+                        <th>Barang</th>
+                        <th>Kategori</th>
+                        <th>Jumlah Dibeli</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(product, index) in customerProducts" :key="product._id" class="data-row">
+                        <td>{{ index + 1 }}</td>
+                        <td class="product-name">{{ product.namaBarang }}</td>
+                        <td>{{ product.kategori }}</td>
+                        <td>{{ product.jumlahBeli }}</td>
+                        <td class="amount-cell">Rp {{ formatCurrency(product.totalHarga) }}</td>
+                      </tr>
+                      <tr v-if="customerProducts.length === 0">
+                        <td colspan="5" class="empty-table-message">
+                          <div class="empty-state small">
+                            <i class="fas fa-box-open"></i>
+                            <p>Tidak ada data produk untuk periode ini</p>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="secondary-btn" @click="closeDetailModal">Tutup</button>
+            <button v-if="selectedCustomer" class="primary-btn" @click="exportCustomerDetail">
+              <i class="fas fa-file-export"></i>
+              Ekspor Detail
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue';
+import axios from 'axios';
+import { Bar } from 'vue-chartjs';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
+import * as ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+
+// Data
+const isLoading = ref(true);
+const customers = ref([]);
+const customerTransactions = ref([]);
+const customerProducts = ref([]);
+const selectedCustomer = ref(null);
+const currentPage = ref(1);
+const totalPages = ref(1);
+const totalItems = ref(0);
+const limit = 10;
+const showDetailModal = ref(false);
+const chartType = ref('value'); // 'value' or 'frequency'
+const customerIdentifier = ref('name'); // 'name' or 'phone'
+const activeQuickFilter = ref('halfyear');
+
+// Data perbandingan dari API
+const comparisonData = ref({
+  pelanggan: null,
+  transaksi: null,
+  rataRata: null
+});
+
+// Summary data
+const summary = ref({
+  totalPelanggan: 0,
+  totalTransaksi: 0,
+  rataRata: 0
+});
+
+// Filters
+const filters = ref({
+  search: '',
+  startDate: '',
+  endDate: ''
+});
+
+// Computed
+const startIndex = computed(() => (currentPage.value - 1) * limit);
+
+const paginationRange = computed(() => {
+  const range = [];
+  const maxVisible = 5;
+  
+  if (totalPages.value <= maxVisible) {
+    // If total pages is less than max visible, show all pages
+    for (let i = 1; i <= totalPages.value; i++) {
+      range.push(i);
+    }
+  } else {
+    // Calculate range based on current page
+    let start = Math.max(1, currentPage.value - Math.floor(maxVisible / 2));
+    let end = Math.min(totalPages.value, start + maxVisible - 1);
+    
+    // Adjust if we're near the end
+    if (end === totalPages.value) {
+      start = Math.max(1, totalPages.value - maxVisible + 1);
+    }
+    
+    for (let i = start; i <= end; i++) {
+      range.push(i);
+    }
+  }
+  
+  return range;
+});
+
+// Top customers chart data
+const topCustomersChart = computed(() => {
+  // Get top 10 customers by total spending or transaction frequency
+  const topCustomers = [...customers.value]
+    .sort((a, b) => {
+      if (chartType.value === 'value') {
+        return b.totalBelanja - a.totalBelanja;
+      } else {
+        return b.jumlahTransaksi - a.jumlahTransaksi;
+      }
+    })
+    .slice(0, 10);
+  
+  const colors = [
+    'rgba(65, 105, 225, 0.7)', // Royal Blue
+    'rgba(46, 204, 113, 0.7)', // Emerald Green
+    'rgba(155, 89, 182, 0.7)', // Amethyst Purple
+    'rgba(241, 196, 15, 0.7)', // Sunflower Yellow
+    'rgba(231, 76, 60, 0.7)',  // Pomegranate Red
+    'rgba(52, 152, 219, 0.7)', // Peter River Blue
+    'rgba(230, 126, 34, 0.7)', // Carrot Orange
+    'rgba(26, 188, 156, 0.7)', // Turquoise
+    'rgba(243, 156, 18, 0.7)', // Orange
+    'rgba(211, 84, 0, 0.7)'    // Pumpkin
+  ];
+  
+  // Choose label based on customerIdentifier
+  const getLabel = (customer) => {
+    if (customerIdentifier.value === 'name') {
+      return truncateText(customer.namaPelanggan, 15);
+    } else {
+      return customer.noHpPelanggan;
+    }
+  };
+  
+  return {
+    labels: topCustomers.map(customer => getLabel(customer)),
+    datasets: [
+      {
+        label: chartType.value === 'value' ? 'Total Belanja (Rp)' : 'Jumlah Transaksi',
+        backgroundColor: colors,
+        borderWidth: 1,
+        borderRadius: 4,
+        data: topCustomers.map(customer => 
+          chartType.value === 'value' ? customer.totalBelanja : customer.jumlahTransaksi
+        )
+      }
+    ]
+  };
+});
+
+// Chart options
+const topCustomersOptions = computed(() => {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    indexAxis: 'y',
+    scales: {
+      x: {
+        beginAtZero: true,
+        grid: {
+          color: 'rgba(0, 0, 0, 0.05)'
+        },
+        ticks: {
+          callback: function(value) {
+            if (chartType.value === 'value') {
+              return 'Rp ' + formatCurrency(value);
+            }
+            return value;
+          },
+          font: {
+            family: "'Poppins', sans-serif",
+            size: 11
+          }
+        },
+        title: {
+          display: true,
+          text: chartType.value === 'value' ? 'Total Belanja (Rp)' : 'Jumlah Transaksi',
+          font: {
+            family: "'Poppins', sans-serif",
+            size: 12,
+            weight: 'bold'
+          }
+        }
+      },
+      y: {
+        grid: {
+          display: false
+        },
+        ticks: {
+          font: {
+            family: "'Poppins', sans-serif",
+            size: 11
+          }
+        }
+      }
+    },
+    plugins: {
+      legend: {
+        display: false
+      },
+      tooltip: {
+        backgroundColor: 'rgba(20, 20, 20, 0.9)',
+        titleFont: {
+          family: "'Poppins', sans-serif",
+          size: 13
+        },
+        bodyFont: {
+          family: "'Poppins', sans-serif",
+          size: 12
+        },
+        padding: 12,
+        cornerRadius: 8,
+        callbacks: {
+          title: function(context) {
+            const customer = customers.value
+              .filter(c => {
+                if (customerIdentifier.value === 'name') {
+                  return truncateText(c.namaPelanggan, 15) === context[0].label;
+                } else {
+                  return c.noHpPelanggan === context[0].label;
+                }
+              })[0];
+
+            if (customer) {
+              return customerIdentifier.value === 'name' 
+                ? customer.namaPelanggan 
+                : `${customer.namaPelanggan} (${customer.noHpPelanggan})`;
+            }
+            return context[0].label;
+          },
+          label: function(context) {
+            if (chartType.value === 'value') {
+              const value = context.raw || 0;
+              return 'Rp ' + formatCurrency(value);
+            } else {
+              return context.raw + ' transaksi';
+            }
+          }
+        }
+      }
+    }
+  };
+});
+
+// Fungsi untuk mendapatkan teks perbandingan
+function getComparisonText(percentage) {
+  if (percentage > 0) return 'meningkat';
+  if (percentage < 0) return 'menurun';
+  return 'tidak berubah';
+}
+
+// Utility Functions
+function formatCurrency(value) {
+  return new Intl.NumberFormat('id-ID').format(value);
+}
+
+function formatDate(dateString) {
+  if (!dateString) return '-';
+  
+  const options = { year: 'numeric', month: 'long', day: 'numeric' };
+  return new Date(dateString).toLocaleDateString('id-ID', options);
+}
+
+function truncateText(text, maxLength) {
+  if (!text) return '';
+  return text.length > maxLength ? text.substr(0, maxLength) + '...' : text;
+}
+
+function getComparisonClass(percentage) {
+  if (percentage > 0) return 'positive';
+  if (percentage < 0) return 'negative';
+  return 'neutral';
+}
+
+function getComparisonIcon(percentage) {
+  if (percentage > 0) return 'fas fa-arrow-up';
+  if (percentage < 0) return 'fas fa-arrow-down';
+  return 'fas fa-minus';
+}
+
+// Date utility functions
+function setQuickFilter(filterType) {
+  activeQuickFilter.value = filterType;
+  
+  const today = new Date();
+  let startDate, endDate;
+  
+  switch (filterType) {
+    case 'month':
+      // Start of current month
+      startDate = new Date(today.getFullYear(), today.getMonth(), 1);
+      
+      // End of current month
+      endDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      break;
+      
+    case 'quarter':
+      // Determine current quarter
+      const currentQuarter = Math.floor(today.getMonth() / 3);
+      
+      // Start of current quarter
+      startDate = new Date(today.getFullYear(), currentQuarter * 3, 1);
+      
+      // End of current quarter
+      endDate = new Date(today.getFullYear(), (currentQuarter + 1) * 3, 1);
+      break;
+      
+    case 'halfyear':
+      // 6 months ago
+      startDate = new Date(today);
+      startDate.setMonth(today.getMonth() - 6);
+      
+      // Today
+      endDate = new Date(today);
+      break;
+      
+    case 'year':
+      // Start of current year
+      startDate = new Date(today.getFullYear(), 0, 1);
+      
+      // End of current year
+      endDate = new Date(today.getFullYear(), 11, 31);
+      break;
+      
+    case 'all':
+      // Use a very broad range for "all time"
+      startDate = new Date(2000, 0, 1);
+      endDate = new Date(today.getFullYear() + 1, 11, 31);
+      break;
+  }
+  
+  // Format dates for input fields
+  filters.value.startDate = startDate.toISOString().split('T')[0];
+  filters.value.endDate = endDate.toISOString().split('T')[0];
+  
+  // Apply the filters
+  applyFilters();
+}
+
+// Initialize date range for last 6 months
+function initDateRange() {
+  setQuickFilter('halfyear');
+}
+
+// Fetch customers
+async function fetchCustomers() {
+  try {
+    isLoading.value = true;
+    
+    const params = {
+      page: currentPage.value,
+      limit,
+      search: filters.value.search,
+      startDate: filters.value.startDate,
+      endDate: filters.value.endDate
+    };
+    
+    const response = await axios.get('/api/analisis/pelanggan', { params });
+    
+    customers.value = response.data.customers;
+    totalItems.value = response.data.total;
+    totalPages.value = Math.ceil(response.data.total / limit);
+    summary.value = response.data.summary;
+    
+    // Tambahkan data perbandingan dari API
+    if (response.data.comparisonData) {
+      comparisonData.value = response.data.comparisonData;
+    }
+  } catch (error) {
+    console.error('Error fetching customers:', error);
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+// Show customer detail
+async function showCustomerDetail(customer) {
+  selectedCustomer.value = customer;
+  showDetailModal.value = true;
+  
+  try {
+    // Fetch customer transactions
+    const transactionsResponse = await axios.get(`/api/analisis/pelanggan/${customer.noHpPelanggan}/transactions`, {
+      params: {
+        startDate: filters.value.startDate,
+        endDate: filters.value.endDate
+      }
+    });
+    customerTransactions.value = transactionsResponse.data;
+    
+    // Fetch customer products
+    const productsResponse = await axios.get(`/api/analisis/pelanggan/${customer.noHpPelanggan}/products`, {
+      params: {
+        startDate: filters.value.startDate,
+        endDate: filters.value.endDate
+      }
+    });
+    customerProducts.value = productsResponse.data;
+  } catch (error) {
+    console.error('Error fetching customer details:', error);
+  }
+}
+
+// Close detail modal
+function closeDetailModal() {
+  showDetailModal.value = false;
+}
+
+// Apply filters
+function applyFilters() {
+  currentPage.value = 1;
+  fetchCustomers();
+}
+
+// Reset filters
+function resetFilters() {
+  filters.value.search = '';
+  applyFilters();
+}
+
+// Change page
+function changePage(page) {
+  if (page < 1 || page > totalPages.value) return;
+  currentPage.value = page;
+  fetchCustomers();
+}
+
+// Export data to Excel
+async function exportData() {
+  // First, get all customers (no pagination)
+  let allCustomers = [];
+  
+  try {
+    isLoading.value = true;
+    
+    const params = {
+      limit: 1000,
+      search: filters.value.search,
+      startDate: filters.value.startDate,
+      endDate: filters.value.endDate
+    };
+    
+    const response = await axios.get('/api/analisis/pelanggan', { params });
+    allCustomers = response.data.customers;
+  } catch (error) {
+    console.error('Error fetching all customers for export:', error);
+    return;
+  } finally {
+    isLoading.value = false;
+  }
+  
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Pelanggan');
+  
+  // Add title
+  worksheet.mergeCells('A1:G1');
+  const titleCell = worksheet.getCell('A1');
+  titleCell.value = 'Laporan Pelanggan';
+  titleCell.font = { size: 16, bold: true };
+  titleCell.alignment = { horizontal: 'center' };
+  
+  // Add period
+  worksheet.mergeCells('A2:G2');
+  const periodCell = worksheet.getCell('A2');
+  periodCell.value = `Periode: ${filters.value.startDate} s/d ${filters.value.endDate}`;
+  periodCell.alignment = { horizontal: 'center' };
+  
+  // Add summary section
+  worksheet.mergeCells('A4:G4');
+  worksheet.getCell('A4').value = 'Ringkasan';
+  worksheet.getCell('A4').font = { bold: true };
+  worksheet.getCell('A4').fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE9ECEF' }
+  };
+  
+  worksheet.addRow(['Total Pelanggan', summary.value.totalPelanggan, '', '', '', '', '']);
+  worksheet.addRow(['Total Transaksi', summary.value.totalTransaksi, '', '', '', '', '']);
+  worksheet.addRow(['Rata-rata Belanja', `Rp ${formatCurrency(summary.value.rataRata)}`, '', '', '', '', '']);
+  
+  // Add spacing
+  worksheet.addRow([]);
+  
+  // Add headers
+  worksheet.addRow(['No', 'Nama Pelanggan', 'No HP', 'Jumlah Transaksi', 'Total Belanja', 'Rata-rata Belanja', 'Terakhir Belanja']);
+  
+  // Style the header
+  const headerRow = worksheet.getRow(9);
+  headerRow.font = { bold: true };
+  headerRow.eachCell(cell => {
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE9ECEF' }
+    };
+    cell.border = {
+      top: { style: 'thin' },
+      bottom: { style: 'thin' },
+      left: { style: 'thin' },
+      right: { style: 'thin' }
+    };
+  });
+  
+  // Add data rows
+  allCustomers.forEach((customer, index) => {
+    worksheet.addRow([
+      index + 1,
+      customer.namaPelanggan,
+      customer.noHpPelanggan,
+      customer.jumlahTransaksi,
+      customer.totalBelanja,
+      customer.rataRata,
+      new Date(customer.lastTransaction)
+    ]);
+  });
+  
+  // Add total row
+  worksheet.addRow([
+    '',
+    'TOTAL',
+    '',
+    summary.value.totalTransaksi,
+    summary.value.totalPelanggan * summary.value.rataRata,
+    summary.value.rataRata,
+    ''
+  ]);
+  
+  const totalRow = worksheet.getRow(10 + allCustomers.length);
+  totalRow.font = { bold: true };
+  totalRow.eachCell(cell => {
+    cell.border = {
+      top: { style: 'double' },
+      bottom: { style: 'double' }
+    };
+  });
+  
+  // Set column widths
+  worksheet.getColumn(1).width = 10;
+  worksheet.getColumn(2).width = 30;
+  worksheet.getColumn(3).width = 20;
+  worksheet.getColumn(4).width = 15;
+  worksheet.getColumn(5).width = 20;
+  worksheet.getColumn(6).width = 20;
+  worksheet.getColumn(7).width = 25;
+  
+  // Format numbers and dates
+  for (let i = 10; i <= 10 + allCustomers.length; i++) {
+    const row = worksheet.getRow(i);
+    
+    // Format currency for Total Belanja and Rata-rata columns
+    row.getCell(5).numFmt = '"Rp "#,##0';
+    row.getCell(6).numFmt = '"Rp "#,##0';
+    
+    // Format date
+    row.getCell(7).numFmt = 'dd/mm/yyyy';
+  }
+  
+  // Format summary values
+  worksheet.getRow(7).getCell(2).numFmt = '"Rp "#,##0';
+  
+  // Export
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  saveAs(blob, `Laporan_Pelanggan_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// Export customer detail to Excel
+async function exportCustomerDetail() {
+  if (!selectedCustomer.value) return;
+  
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet(`Pelanggan - ${selectedCustomer.value.namaPelanggan}`);
+  
+  // Add title
+  worksheet.mergeCells('A1:E1');
+  const titleCell = worksheet.getCell('A1');
+  titleCell.value = `Detail Pelanggan: ${selectedCustomer.value.namaPelanggan}`;
+  titleCell.font = { size: 16, bold: true };
+  titleCell.alignment = { horizontal: 'center' };
+  
+  // Add contact info
+  worksheet.mergeCells('A2:E2');
+  const contactCell = worksheet.getCell('A2');
+  contactCell.value = `No HP: ${selectedCustomer.value.noHpPelanggan}`;
+  contactCell.alignment = { horizontal: 'center' };
+  
+  if (selectedCustomer.value.alamatPelanggan) {
+    worksheet.mergeCells('A3:E3');
+    const addressCell = worksheet.getCell('A3');
+    addressCell.value = `Alamat: ${selectedCustomer.value.alamatPelanggan}`;
+    addressCell.alignment = { horizontal: 'center' };
+  }
+  
+  // Add period
+  worksheet.mergeCells('A4:E4');
+  const periodCell = worksheet.getCell('A4');
+  periodCell.value = `Periode: ${filters.value.startDate} s/d ${filters.value.endDate}`;
+  periodCell.alignment = { horizontal: 'center' };
+  
+  // Add summary section
+  worksheet.mergeCells('A6:B6');
+  worksheet.getCell('A6').value = 'Ringkasan Pelanggan';
+  worksheet.getCell('A6').font = { bold: true };
+  worksheet.getCell('A6').fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE9ECEF' }
+  };
+  
+  worksheet.mergeCells('D6:E6');
+  worksheet.getCell('D6').value = 'Ringkasan Transaksi';
+  worksheet.getCell('D6').font = { bold: true };
+  worksheet.getCell('D6').fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE9ECEF' }
+  };
+  
+  worksheet.addRow(['Jumlah Transaksi', selectedCustomer.value.jumlahTransaksi, '', 'Total Belanja', `Rp ${formatCurrency(selectedCustomer.value.totalBelanja)}`]);
+  worksheet.addRow(['Terakhir Belanja', formatDate(selectedCustomer.value.lastTransaction), '', 'Rata-rata Belanja', `Rp ${formatCurrency(selectedCustomer.value.rataRata)}`]);
+  
+  // Add spacing
+  worksheet.addRow([]);
+  
+  // Add transactions section
+  if (customerTransactions.value.length > 0) {
+    worksheet.mergeCells('A10:E10');
+    worksheet.getCell('A10').value = 'Riwayat Transaksi';
+    worksheet.getCell('A10').font = { bold: true };
+    worksheet.getCell('A10').fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE9ECEF' }
+    };
+    
+    // Add transaction headers
+    worksheet.addRow(['Tanggal', 'Nomor Nota', 'Jumlah Item', 'Total', '']);
+    
+    // Style the transaction header
+    const transactionHeaderRow = worksheet.getRow(11);
+    transactionHeaderRow.font = { bold: true };
+    
+    // Add transaction data
+    customerTransactions.value.forEach(transaction => {
+      worksheet.addRow([
+        new Date(transaction.tanggal),
+        transaction.nomorNota,
+        transaction.items.length + ' item',
+        transaction.totalHarga,
+        ''
+      ]);
+    });
+    
+    // Format transaction data
+    for (let i = 12; i < 12 + customerTransactions.value.length; i++) {
+      const row = worksheet.getRow(i);
+      row.getCell(1).numFmt = 'dd/mm/yyyy';
+      row.getCell(4).numFmt = '"Rp "#,##0';
+    }
+    
+    // Add spacing
+    worksheet.addRow([]);
+  }
+  
+  // Add products section
+  const productsStartRow = customerTransactions.value.length > 0 ? 14 + customerTransactions.value.length : 11;
+  
+  if (customerProducts.value.length > 0) {
+    worksheet.mergeCells(`A${productsStartRow}:E${productsStartRow}`);
+    worksheet.getCell(`A${productsStartRow}`).value = 'Produk yang Sering Dibeli';
+    worksheet.getCell(`A${productsStartRow}`).font = { bold: true };
+    worksheet.getCell(`A${productsStartRow}`).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE9ECEF' }
+    };
+    
+    // Add product headers
+    worksheet.addRow(['No', 'Barang', 'Kategori', 'Jumlah Dibeli', 'Total']);
+    
+    // Style the product header
+    const productHeaderRow = worksheet.getRow(productsStartRow + 1);
+    productHeaderRow.font = { bold: true };
+    
+    // Add product data
+    customerProducts.value.forEach((product, index) => {
+      worksheet.addRow([
+        index + 1,
+        product.namaBarang,
+        product.kategori,
+        product.jumlahBeli,
+        product.totalHarga
+      ]);
+    });
+    
+    // Format product data
+    for (let i = productsStartRow + 2; i < productsStartRow + 2 + customerProducts.value.length; i++) {
+      const row = worksheet.getRow(i);
+      row.getCell(5).numFmt = '"Rp "#,##0';
+    }
+    
+    // Add total row for products
+    const totalProductsRow = worksheet.addRow([
+      '',
+      'TOTAL',
+      '',
+      customerProducts.value.reduce((sum, product) => sum + product.jumlahBeli, 0),
+      customerProducts.value.reduce((sum, product) => sum + product.totalHarga, 0)
+    ]);
+    
+    totalProductsRow.font = { bold: true };
+    totalProductsRow.getCell(5).numFmt = '"Rp "#,##0';
+  }
+  
+  // Set column widths
+  worksheet.getColumn(1).width = 15;
+  worksheet.getColumn(2).width = 30;
+  worksheet.getColumn(3).width = 15;
+  worksheet.getColumn(4).width = 15;
+  worksheet.getColumn(5).width = 20;
+  
+  // Format summary values
+  worksheet.getRow(7).getCell(5).numFmt = '"Rp "#,##0';
+  worksheet.getRow(8).getCell(5).numFmt = '"Rp "#,##0';
+  
+  // Export
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  saveAs(blob, `Detail_Pelanggan_${selectedCustomer.value.namaPelanggan}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+onMounted(() => {
+  initDateRange();
+  fetchCustomers();
+});
+</script>
+
+<style scoped>
+/* Base Styles */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css');
+
+.analisis-container {
+  font-family: 'Poppins', sans-serif;
+  color: #2d3748;
+}
+
+/* Header Styles */
+.analisis-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center; /* Ubah dari flex-start ke center */
+  margin-bottom: 24px;
+  flex-wrap: nowrap; /* Ubah menjadi nowrap untuk mencegah wrapping pada ukuran layar normal */
+  gap: 20px;
+  padding: 5px 0; /* Tambah padding atas dan bawah */
+}
+
+.header-left {
+  flex: 1;
+  min-width: 300px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0; /* Mencegah tombol menyusut */
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center; /* Centering konten tombol */
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid #e2e8f0;
+  background-color: white;
+  color: #4a5568;
+  min-width: 100px; /* Menetapkan lebar minimum */
+  height: 40px; /* Menetapkan tinggi tetap */
+}
+
+.action-btn:hover {
+  background-color: #f7fafc;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.action-btn i {
+  font-size: 14px;
+}
+
+/* Chart Actions Group */
+.chart-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.chart-action-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #f8fafc;
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.chart-action-label {
+  font-size: 12px;
+  color: #718096;
+  font-weight: 500;
+}
+
+/* Filter Panel Styles */
+.filter-panel {
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.filter-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.filter-group {
+  flex: 1;
+  min-width: 200px;
+}
+
+.date-range-group {
+  flex: 2;
+  min-width: 360px;
+}
+
+.button-group {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+}
+
+.filter-group label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: #4a5568;
+}
+
+.search-wrapper {
+  position: relative;
+}
+
+.search-wrapper i {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #a0aec0;
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #4a5568;
+  transition: all 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.15);
+}
+
+.clear-search {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #a0aec0;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.clear-search:hover {
+  background-color: #e2e8f0;
+  color: #4a5568;
+}
+
+.date-inputs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.date-input-wrapper {
+  position: relative;
+  flex: 1;
+}
+
+.date-input-wrapper i {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #a0aec0;
+  pointer-events: none;
+}
+
+.date-input {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #4a5568;
+  transition: all 0.2s;
+}
+
+.date-input:focus {
+  outline: none;
+  border-color: #4361ee;
+  box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.15);
+}
+
+.date-separator {
+  color: #a0aec0;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.apply-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background-color: #4361ee;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.apply-btn:hover {
+  background-color: #3249c2;
+  transform: translateY(-1px);
+}
+
+.apply-btn:disabled {
+  background-color: #a0aec0;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.apply-btn i {
+  font-size: 14px;
+}
+
+.quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.quick-filter-btn {
+  padding: 6px 12px;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  font-size: 12px;
+  color: #718096;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.quick-filter-btn:hover {
+  background-color: #edf2f7;
+}
+
+.quick-filter-btn.active {
+  background-color: #4361ee1a;
+  border-color: #4361ee;
+  color: #4361ee;
+  font-weight: 500;
+}
+
+/* Loading Indicator */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  color: #a0aec0;
+}
+
+.loading-spinner {
+  font-size: 40px;
+  margin-bottom: 16px;
+  color: #4361ee;
+}
+
+.loading-container p {
+  font-size: 15px;
+}
+
+/* Stats Cards */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: all 0.3s;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 5px;
+  height: 100%;
+}
+
+.customers-card::before {
+  background-color: #4361ee;
+}
+
+.transactions-card::before {
+  background-color: #2ecc71;
+}
+
+.average-card::before {
+  background-color: #3498db;
+}
+
+.frequency-card::before {
+  background-color: #9b59b6;
+}
+
+.stat-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.customers-card .stat-icon {
+  background-color: #4361ee1a;
+  color: #4361ee;
+}
+
+.transactions-card .stat-icon {
+  background-color: #2ecc711a;
+  color: #2ecc71;
+}
+
+.average-card .stat-icon {
+  background-color: #3498db1a;
+  color: #3498db;
+}
+
+.frequency-card .stat-icon {
+  background-color: #9b59b61a;
+  color: #9b59b6;
+}
+
+.stat-content {
+  flex: 1;
+}
+
+.stat-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #718096;
+  margin: 0 0 6px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: #2d3748;
+  margin: 0 0 6px;
+}
+
+.stat-comparison {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.stat-comparison.positive {
+  color: #2ecc71;
+}
+
+.stat-comparison.negative {
+  color: #e74c3c;
+}
+
+.stat-comparison.neutral {
+  color: #7f8c8d;
+}
+
+.stat-subtitle {
+  font-size: 12px;
+  color: #a0aec0;
+  margin: 0;
+}
+
+/* Chart Section */
+.chart-section {
+  margin-bottom: 24px;
+}
+
+.chart-container {
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+
+.chart-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #edf2f7;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chart-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #2d3748;
+}
+
+.chart-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chart-type-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #718096;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.chart-type-btn:hover {
+  background-color: #edf2f7;
+}
+
+.chart-type-btn.active {
+  background-color: #4361ee;
+  border-color: #4361ee;
+  color: white;
+}
+
+.chart-body {
+  padding: 16px 24px 24px;
+  height: 500px;
+}
+
+.chart-wrapper {
+  height: 100%;
+  width: 100%;
+}
+
+.empty-chart {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #a0aec0;
+  gap: 16px;
+}
+
+.empty-chart i {
+  font-size: 48px;
+}
+
+.empty-chart p {
+  font-size: 15px;
+  margin: 0;
+}
+
+/* Data Table Styles */
+.data-table-container {
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.table-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #edf2f7;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.table-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #2d3748;
+}
+
+.table-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.table-info {
+  font-size: 14px;
+  color: #718096;
+}
+
+.table-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background-color: #4361ee;
+  border: none;
+  border-radius: 6px;
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.table-action-btn:hover {
+  background-color: #3249c2;
+}
+
+.table-action-btn i {
+  font-size: 14px;
+}
+
+.table-body {
+  padding: 0;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th, 
+.data-table td {
+  padding: 16px 24px;
+  text-align: left;
+  font-size: 14px;
+}
+
+.data-table th {
+  background-color: #f8fafc;
+  font-weight: 600;
+  color: #4a5568;
+  white-space: nowrap;
+}
+
+.data-table td {
+  border-bottom: 1px solid #edf2f7;
+  color: #2d3748;
+}
+
+.data-row:hover {
+  background-color: #f8fafc;
+}
+
+.customer-name {
+  font-weight: 500;
+}
+
+.amount-cell {
+  font-family: "Consolas", monospace;
+}
+
+.detail-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background-color: #4361ee0f;
+  border: 1px solid #4361ee33;
+  border-radius: 6px;
+  color: #4361ee;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.detail-btn:hover {
+  background-color: #4361ee1a;
+}
+
+.detail-btn i {
+  font-size: 12px;
+}
+
+.empty-table-message {
+  padding: 40px !important;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: #a0aec0;
+  gap: 16px;
+}
+
+.empty-state i {
+  font-size: 32px;
+}
+
+.empty-state p {
+  font-size: 15px;
+  margin: 0;
+}
+
+.empty-state.small {
+  gap: 8px;
+}
+
+.empty-state.small i {
+  font-size: 24px;
+}
+
+.empty-state.small p {
+  font-size: 13px;
+}
+
+.reset-btn {
+  padding: 8px 16px;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: #4a5568;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reset-btn:hover {
+  background-color: #edf2f7;
+}
+
+.reset-btn i {
+  font-size: 12px;
+}
+
+/* Pagination */
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  margin-top: 24px;
+  padding: 0 24px 24px;
+}
+
+.pagination {
+  display: flex;
+  gap: 6px;
+}
+
+.pagination-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background-color: white;
+  color: #4a5568;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(.disabled) {
+  background-color: #f8fafc;
+  border-color: #cbd5e0;
+}
+
+.pagination-btn.active {
+  background-color: #4361ee;
+  border-color: #4361ee;
+  color: white;
+}
+
+.pagination-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-btn i {
+  font-size: 12px;
+}
+
+.page-number {
+  font-weight: 500;
+}
+
+/* Custom Modal Styles - DIPERBAIKI */
+.custom-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.custom-modal.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.modal-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+  z-index: 1001; /* Pastikan backdrop berada di bawah dialog */
+}
+
+.modal-dialog {
+  position: relative;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  transform: translateY(20px);
+  transition: transform 0.3s ease;
+  z-index: 1002; /* Pastikan dialog berada di atas backdrop */
+}
+
+.custom-modal.show .modal-dialog {
+  transform: translateY(0);
+}
+
+.modal-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 90vh;
+  background-color: white; /* Pastikan background putih solid */
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.modal-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #edf2f7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: white; /* Pastikan background putih solid */
+}
+
+.modal-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #2d3748;
+}
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #718096;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background-color: #edf2f7;
+  color: #e53e3e;
+}
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+  background-color: white; /* Pastikan background putih solid */
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #edf2f7;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  background-color: white; /* Pastikan background putih solid */
+}
+
+.primary-btn, .secondary-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.primary-btn {
+  background-color: #4361ee;
+  border: none;
+  color: white;
+}
+
+.primary-btn:hover {
+  background-color: #3249c2;
+}
+
+.secondary-btn {
+  background-color: white;
+  border: 1px solid #e2e8f0;
+  color: #4a5568;
+}
+
+.secondary-btn:hover {
+  background-color: #f8fafc;
+}
+
+/* Customer Detail Modal Styles */
+.customer-profile {
+  background-color: #f8fafc;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.customer-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.customer-avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background-color: #4361ee;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.customer-info h4 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: #2d3748;
+}
+
+.customer-contact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.contact-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #718096;
+}
+
+.contact-item i {
+  color: #4a5568;
+}
+
+.customer-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.summary-card {
+  background-color: white;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.summary-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background-color: #4361ee1a;
+  color: #4361ee;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.summary-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.summary-label {
+  font-size: 12px;
+  color: #718096;
+}
+
+.detail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.detail-section {
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+
+.section-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #edf2f7;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.section-header h4 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: #2d3748;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-header h4 i {
+  color: #4361ee;
+}
+
+.section-count {
+  font-size: 12px;
+  color: #718096;
+  background-color: #edf2f7;
+  padding: 4px 8px;
+  border-radius: 12px;
+}
+
+.detail-table th, 
+.detail-table td {
+  padding: 12px 20px;
+  font-size: 13px;
+}
+
+.nota-link {
+  color: #4361ee;
+  text-decoration: none;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.nota-link:hover {
+  text-decoration: underline;
+}
+
+.product-name {
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Customer Chart */
+.customer-chart {
+  height: 100%;
+}
+
+/* Responsive Styles */
+@media (max-width: 768px) {
+  .search-input {
+    width: 100%;
+  }
+  
+  .date-inputs {
+    flex-direction: column;
+  }
+  
+  .date-separator {
+    display: none;
+  }
+  
+  .filter-container {
+    gap: 16px;
+  }
+  
+  .filter-group {
+    min-width: 100%;
+  }
+  
+  .date-range-group {
+    min-width: 100%;
+  }
+  
+  .page-title {
+    font-size: 24px;
+  }
+  
+  .chart-header {
+    padding: 16px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .chart-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  
+  .chart-body {
+    padding: 12px 16px 16px;
+    height: 400px;
+  }
+  
+  .table-header {
+    padding: 16px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .table-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  
+  .data-table th, 
+  .data-table td {
+    padding: 12px 16px;
+  }
+  
+  .customer-info {
+    flex-direction: column;
+    align-items: flex-start;
+    text-align: center;
+  }
+  
+  .customer-contact {
+    flex-direction: column;
+    gap: 8px;
+  }
+  
+  .modal-header, .modal-body, .modal-footer {
+    padding: 16px;
+  }
+  
+  .customer-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 576px) {
+  .action-btn span, .table-action-btn span, .detail-btn span {
+    display: none;
+  }
+  
+  .action-btn, .table-action-btn {
+    width: 40px;
+    justify-content: center;
+  }
+  
+  .detail-btn {
+    width: 32px;
+    padding: 6px;
+  }
+  
+  .pagination-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 12px;
+  }
+  
+  .chart-action-group {
+    padding: 2px 4px;
+  }
+  
+  .chart-action-label {
+    display: none;
+  }
+}
+</style>
