@@ -22,8 +22,21 @@ const profilRoutes = require('./routes/profil');
 // Create Express app
 const app = express();
 
+// CORS configuration
+const corsOptions = {
+  origin: [
+    'http://localhost:5173',
+    'https://pos-ericko.vercel.app',
+    'https://pos-ericko.vercel.app/',
+    /\.vercel\.app$/
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Connect to MongoDB
