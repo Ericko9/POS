@@ -2264,7 +2264,21 @@ onMounted(() => {
 }
 
 /* Responsive Styles */
+/* Responsive Styles */
 @media (max-width: 768px) {
+  .analisis-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .header-actions {
+    width: 100%;
+    margin-top: 8px;
+    justify-content: flex-start;
+  }
+  .charts-section {
+    grid-template-columns: 1fr;
+  }
+  
   .search-input {
     width: 100%;
   }
@@ -2295,19 +2309,10 @@ onMounted(() => {
   
   .chart-header {
     padding: 16px;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
-  }
-
-  .chart-actions {
-    width: 100%;
-    justify-content: space-between;
   }
   
   .chart-body {
     padding: 12px 16px 16px;
-    height: 400px;
   }
   
   .table-header {
@@ -2318,7 +2323,10 @@ onMounted(() => {
   
   .table-actions {
     width: 100%;
-    justify-content: space-between;
+  }
+  
+  .search-container {
+    width: 100%;
   }
   
   .data-table th, 
@@ -2326,23 +2334,23 @@ onMounted(() => {
     padding: 12px 16px;
   }
   
-  .customer-info {
-    flex-direction: column;
-    align-items: flex-start;
-    text-align: center;
-  }
-  
-  .customer-contact {
-    flex-direction: column;
-    gap: 8px;
+  .detail-stats {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
   
   .modal-header, .modal-body, .modal-footer {
     padding: 16px;
   }
   
-  .customer-summary {
-    grid-template-columns: 1fr;
+  .progress-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  
+  .progress {
+    width: 100%;
   }
 }
 

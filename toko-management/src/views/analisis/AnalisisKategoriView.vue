@@ -2192,7 +2192,17 @@ onMounted(() => {
 }
 
 /* Responsive Styles */
+/* Responsive Styles */
 @media (max-width: 768px) {
+  .analisis-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .header-actions {
+    width: 100%;
+    margin-top: 8px;
+    justify-content: flex-start;
+  }
   .charts-section {
     grid-template-columns: 1fr;
   }

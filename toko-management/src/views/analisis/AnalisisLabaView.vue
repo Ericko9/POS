@@ -1667,6 +1667,15 @@ onMounted(() => {
 
 /* Responsive Styles */
 @media (max-width: 768px) {
+  .analisis-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .header-actions {
+    width: 100%;
+    margin-top: 8px;
+    justify-content: flex-start;
+  }
   .charts-section {
     grid-template-columns: 1fr;
   }
@@ -1724,6 +1733,25 @@ onMounted(() => {
   .data-table th, 
   .data-table td {
     padding: 12px 16px;
+  }
+  
+  .detail-stats {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .modal-header, .modal-body, .modal-footer {
+    padding: 16px;
+  }
+  
+  .progress-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  
+  .progress {
+    width: 100%;
   }
 }
 
